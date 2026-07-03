@@ -1,0 +1,29 @@
+{
+  "name": "retrieval-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "test": "node --test --import tsx test/*.test.ts",
+    "check": "npm run build && npm test",
+    "format": "prettier --write . --ignore-unknown",
+    "format:check": "prettier --check . --ignore-unknown"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "latest",
+    "@google/genai": "latest",
+    "@qdrant/js-client-rest": "latest",
+    "ai": "latest",
+    "fastify": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "prettier": "^3.9.4",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}
