@@ -1,0 +1,61 @@
+# Reusable checks. Called by ci.yml on every PR and by release.yml before any
+# image is published, so a pushed tag can never skip what a PR had to pass.
+name: Verify
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+
+  test:
+    name: Test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is what the runtime image ships; 24 is the current Node release
+        # line, so a break there is caught before the base image moves.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Typecheck and tests are separate steps so a red run says which failed.
+      - name: Typecheck
+        run: npm run build
+      - name: Test
+        run: npm test
+
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Production tree only: a dev-only advisory should not block a release of
+      # an image that does not contain the package.
+      - run: npm audit --omit=dev --audit-level=high
