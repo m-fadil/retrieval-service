@@ -1,0 +1,62 @@
+name: retrieval-service
+
+services:
+  retrieval-service:
+    build:
+      context: .
+      target: runtime
+    image: ${IMAGE:-ghcr.io/m-fadil/retrieval-service}:${IMAGE_TAG:-local}
+    container_name: retrieval-service
+    restart: unless-stopped
+    init: true
+    ports:
+      # Only the published port is configurable; the container always listens
+      # on 3000, which is what the healthcheck and Dockerfile assume.
+      - "${PUBLISHED_PORT:-3000}:3000"
+    # Secrets and provider settings come from .env (see .env.example). The
+    # explicit `environment` block below wins over env_file, which is the point:
+    # it pins the values that must describe the container network rather than a
+    # developer's laptop.
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      - qdrant
+    networks:
+      - rag-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: qdrant
+    restart: unless-stopped
+    # Not published by default: the collection holds FAQ text and Qdrant is
+    # unauthenticated unless QDRANT_API_KEY is set. Uncomment only for local
+    # debugging, and set QDRANT_API_KEY if you do.
+    # ports:
+    #   - "6333:6333"
+    #   - "6334:6334"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    networks:
+      - rag-net
+    # No healthcheck: the qdrant image ships no shell or curl. retrieval-service
+    # tolerates Qdrant being absent at boot (/health reports qdrant: false), so
+    # a plain depends_on is enough.
+
+volumes:
+  qdrant-storage:
+
+networks:
+  rag-net:
+    name: rag-net
