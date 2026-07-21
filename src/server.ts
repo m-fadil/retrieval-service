@@ -69,5 +69,22 @@ export function buildApp(deps: AppDeps = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const config = loadConfig();
   const app = buildApp({ config });
+
+  // Without this, Node as PID 1 dies immediately on SIGTERM and every in-flight
+  // request is severed: a rolling deploy would drop answers mid-composition,
+  // after the LLM and embedding calls have already been paid for.
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => {
+      app.log.info({ signal }, "shutting down");
+      app.close().then(
+        () => process.exit(0),
+        (error) => {
+          app.log.error({ err: error }, "shutdown failed");
+          process.exit(1);
+        },
+      );
+    });
+  }
+
   await app.listen({ host: config.HOST, port: config.PORT });
 }
