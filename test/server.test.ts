@@ -339,7 +339,10 @@ function assertNativeToolFlow(
 ) {
   assert.equal(requests.length, 2);
   assert.equal(requests[0]?.tool_choice, "auto");
-  assert.match(JSON.stringify(requests[0]?.tools), new RegExp(`"name":"${expectedTool}"`));
+  assert.match(
+    JSON.stringify(requests[0]?.tools),
+    new RegExp(`"name":"${expectedTool}"`),
+  );
   const assistant = requests[1]?.messages[2];
   assert.equal(assistant?.role, "assistant");
   const toolCalls = assistant?.tool_calls as Array<Record<string, unknown>>;
@@ -443,7 +446,9 @@ test("answer route logs compose usage", async () => {
         async answer(input) {
           return service.answer(input, {
             debug() {},
-            info(value: unknown) { events.push({ level: "info", value }); },
+            info(value: unknown) {
+              events.push({ level: "info", value });
+            },
             error() {},
           });
         },
@@ -456,10 +461,18 @@ test("answer route logs compose usage", async () => {
       payload: { question: "hello" },
     });
     assert.equal(response.statusCode, 200);
-    assert.ok(events.some(({ level, value }) => {
-      const event = value as Record<string, unknown>;
-      return level === "info" && event.stage === "answer.compose" && event.prompt_tokens === 11 && event.completion_tokens === 7 && event.total_tokens === 18;
-    }));
+    assert.ok(
+      events.some(({ level, value }) => {
+        const event = value as Record<string, unknown>;
+        return (
+          level === "info" &&
+          event.stage === "answer.compose" &&
+          event.prompt_tokens === 11 &&
+          event.completion_tokens === 7 &&
+          event.total_tokens === 18
+        );
+      }),
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -671,7 +684,11 @@ test("chat logs sanitized debug metadata when MCP tool discovery degrades with 4
 
 test("chat emits sanitized native LLM usage and MCP lifecycle info", async () => {
   const question = "sensitive customer question";
-  const arguments_ = { question, job_id: "JOB-sensitive", secret: "sensitive arguments" };
+  const arguments_ = {
+    question,
+    job_id: "JOB-sensitive",
+    secret: "sensitive arguments",
+  };
   const toolResult = "sensitive tool result";
   const events: Array<{ level: string; value: unknown }> = [];
   const log: ChatLog = {
@@ -701,8 +718,20 @@ test("chat emits sanitized native LLM usage and MCP lifecycle info", async () =>
     const service = createRagService(config, embedder, store, {
       async listTools() {
         return [
-          { name: "get_environment_context", inputSchema: { required: ["job_id"], properties: { job_id: {}, question: {} } } },
-          { name: "get_job_context", inputSchema: { required: ["job_id"], properties: { job_id: {}, question: {}, secret: {} } } },
+          {
+            name: "get_environment_context",
+            inputSchema: {
+              required: ["job_id"],
+              properties: { job_id: {}, question: {} },
+            },
+          },
+          {
+            name: "get_job_context",
+            inputSchema: {
+              required: ["job_id"],
+              properties: { job_id: {}, question: {}, secret: {} },
+            },
+          },
         ];
       },
       async callTool(_type, name) {
@@ -710,15 +739,56 @@ test("chat emits sanitized native LLM usage and MCP lifecycle info", async () =>
       },
     });
 
-    await service.chat({ type: "staff", question, limit: 5, min_score: 0.7, job_id: "JOB-sensitive" }, log);
+    await service.chat(
+      {
+        type: "staff",
+        question,
+        limit: 5,
+        min_score: 0.7,
+        job_id: "JOB-sensitive",
+      },
+      log,
+    );
 
-    const info = events.filter((event) => event.level === "info").map((event) => event.value as Record<string, unknown>);
-    for (const stage of ["chat.native_tool_selection", "chat.native_tool_replay"]) {
-      assert.ok(info.some((event) => event.stage === stage && event.usage_available === true && event.prompt_tokens === 11 && event.completion_tokens === 7 && event.total_tokens === 18));
+    const info = events
+      .filter((event) => event.level === "info")
+      .map((event) => event.value as Record<string, unknown>);
+    for (const stage of [
+      "chat.native_tool_selection",
+      "chat.native_tool_replay",
+    ]) {
+      assert.ok(
+        info.some(
+          (event) =>
+            event.stage === stage &&
+            event.usage_available === true &&
+            event.prompt_tokens === 11 &&
+            event.completion_tokens === 7 &&
+            event.total_tokens === 18,
+        ),
+      );
     }
-    for (const [tool, mode] of [["get_environment_context", "mandatory"], ["get_job_context", "native"]]) {
-      assert.ok(info.some((event) => event.tool === tool && event.mode === mode && event.status === "started"));
-      assert.ok(info.some((event) => event.tool === tool && event.mode === mode && event.status === "completed" && typeof event.ms === "number"));
+    for (const [tool, mode] of [
+      ["get_environment_context", "mandatory"],
+      ["get_job_context", "native"],
+    ]) {
+      assert.ok(
+        info.some(
+          (event) =>
+            event.tool === tool &&
+            event.mode === mode &&
+            event.status === "started",
+        ),
+      );
+      assert.ok(
+        info.some(
+          (event) =>
+            event.tool === tool &&
+            event.mode === mode &&
+            event.status === "completed" &&
+            typeof event.ms === "number",
+        ),
+      );
     }
     const output = JSON.stringify(info);
     assert.equal(output.includes(question), false);
@@ -733,25 +803,78 @@ test("chat logs unavailable LLM usage for planner flow without request data", as
   const question = "sensitive planner question";
   const toolResult = "sensitive planner result";
   const events: Array<{ level: string; value: unknown }> = [];
-  const log: ChatLog = { debug() {}, info(value: unknown) { events.push({ level: "info", value }); }, error() {} };
+  const log: ChatLog = {
+    debug() {},
+    info(value: unknown) {
+      events.push({ level: "info", value });
+    },
+    error() {},
+  };
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-  await withPlanner([nativeNoCalls(), plannerCall("staff", {}), finalAnswer("safe answer")], async () => {
-    const service = createRagService(config, embedder, store, {
-      async listTools() { return [staffTool("staff")]; },
-      async callTool(_type, name, toolArguments) {
-        calls.push({ name, arguments: toolArguments });
-        return { content: [{ type: "text", text: toolResult }] };
-      },
-    });
-    await service.chat({ type: "staff", question, limit: 5, min_score: 0.7, staff_id: "STAFF-sensitive" }, log);
-  });
+  await withPlanner(
+    [nativeNoCalls(), plannerCall("staff", {}), finalAnswer("safe answer")],
+    async () => {
+      const service = createRagService(config, embedder, store, {
+        async listTools() {
+          return [staffTool("staff")];
+        },
+        async callTool(_type, name, toolArguments) {
+          calls.push({ name, arguments: toolArguments });
+          return { content: [{ type: "text", text: toolResult }] };
+        },
+      });
+      await service.chat(
+        {
+          type: "staff",
+          question,
+          limit: 5,
+          min_score: 0.7,
+          staff_id: "STAFF-sensitive",
+        },
+        log,
+      );
+    },
+  );
 
-  const info = events.filter((event) => event.level === "info").map((event) => event.value as Record<string, unknown>);
-  assert.ok(info.some((event) => event.stage === "chat.native_tool_selection" && event.usage_available === false));
-  assert.ok(info.some((event) => event.stage === "chat.plan" && event.usage_available === false));
-  assert.ok(info.some((event) => event.stage === "chat.compose_answer" && event.usage_available === false));
-  assert.ok(info.some((event) => event.tool === "staff" && event.mode === "planner" && event.status === "started"));
-  assert.ok(info.some((event) => event.tool === "staff" && event.mode === "planner" && event.status === "completed" && typeof event.ms === "number"));
+  const info = events
+    .filter((event) => event.level === "info")
+    .map((event) => event.value as Record<string, unknown>);
+  assert.ok(
+    info.some(
+      (event) =>
+        event.stage === "chat.native_tool_selection" &&
+        event.usage_available === false,
+    ),
+  );
+  assert.ok(
+    info.some(
+      (event) => event.stage === "chat.plan" && event.usage_available === false,
+    ),
+  );
+  assert.ok(
+    info.some(
+      (event) =>
+        event.stage === "chat.compose_answer" &&
+        event.usage_available === false,
+    ),
+  );
+  assert.ok(
+    info.some(
+      (event) =>
+        event.tool === "staff" &&
+        event.mode === "planner" &&
+        event.status === "started",
+    ),
+  );
+  assert.ok(
+    info.some(
+      (event) =>
+        event.tool === "staff" &&
+        event.mode === "planner" &&
+        event.status === "completed" &&
+        typeof event.ms === "number",
+    ),
+  );
   const output = JSON.stringify(info);
   assert.equal(output.includes(question), false);
   assert.equal(output.includes(JSON.stringify(calls[0]?.arguments)), false);
@@ -763,7 +886,9 @@ test("chat logs a sanitized optional MCP failure lifecycle", async () => {
   const events: Array<{ level: string; value: unknown }> = [];
   const log: ChatLog = {
     debug() {},
-    info(value: unknown) { events.push({ level: "info", value }); },
+    info(value: unknown) {
+      events.push({ level: "info", value });
+    },
     error() {},
   };
   const originalFetch = globalThis.fetch;
@@ -774,23 +899,50 @@ test("chat logs a sanitized optional MCP failure lifecycle", async () => {
     )) satisfies typeof fetch;
   try {
     const service = createRagService(config, embedder, store, {
-      async listTools() { return [staffTool("staff")]; },
-      async callTool() { throw new Error(`MCP failed: ${sensitive}`); },
+      async listTools() {
+        return [staffTool("staff")];
+      },
+      async callTool() {
+        throw new Error(`MCP failed: ${sensitive}`);
+      },
     });
     await assert.rejects(
-      service.chat({ type: "staff", question: "details", limit: 5, min_score: 0.7, staff_id: "STAFF-1" }, log),
+      service.chat(
+        {
+          type: "staff",
+          question: "details",
+          limit: 5,
+          min_score: 0.7,
+          staff_id: "STAFF-1",
+        },
+        log,
+      ),
       new RegExp(sensitive),
     );
     const lifecycle = events
       .filter(({ level, value }) => {
         const event = value as Record<string, unknown>;
-        return level === "info" && event.tool === "staff" && event.mode === "native";
+        return (
+          level === "info" && event.tool === "staff" && event.mode === "native"
+        );
       })
       .map(({ value }) => value as Record<string, unknown>);
-    assert.deepEqual(lifecycle.map((event) => event.status), ["started", "error"]);
+    assert.deepEqual(
+      lifecycle.map((event) => event.status),
+      ["started", "error"],
+    );
     assert.equal(typeof lifecycle[1]?.ms, "number");
-    assert.deepEqual(Object.keys(lifecycle[0] ?? {}).sort(), ["mode", "status", "tool"]);
-    assert.deepEqual(Object.keys(lifecycle[1] ?? {}).sort(), ["mode", "ms", "status", "tool"]);
+    assert.deepEqual(Object.keys(lifecycle[0] ?? {}).sort(), [
+      "mode",
+      "status",
+      "tool",
+    ]);
+    assert.deepEqual(Object.keys(lifecycle[1] ?? {}).sort(), [
+      "mode",
+      "ms",
+      "status",
+      "tool",
+    ]);
     assert.equal(JSON.stringify(lifecycle).includes(sensitive), false);
   } finally {
     globalThis.fetch = originalFetch;
@@ -847,11 +999,10 @@ test("chat route combines FAQ and native MCP tool calling for schedule intent", 
         name: "get_job_context",
         arguments: { question: "When next schedule", job_id: "JOB-1" },
       });
-       assertNativeToolFlow(requests, "get_job_context");
-       const replayPrompt = JSON.stringify(requests[1]?.messages[0]);
-       assert.match(replayPrompt, /FAQ says schedules are in the app\./);
-       assert.match(replayPrompt, /mcp:get_environment_context/);
-
+      assertNativeToolFlow(requests, "get_job_context");
+      const replayPrompt = JSON.stringify(requests[1]?.messages[0]);
+      assert.match(replayPrompt, /FAQ says schedules are in the app\./);
+      assert.match(replayPrompt, /mcp:get_environment_context/);
     },
   );
 });
@@ -1138,7 +1289,12 @@ test("chat service returns fallback when faq_search has no min_score match", asy
     },
   });
   assert.deepEqual(
-    await service.chat({ type: "staff", question: "hello", limit: 5, min_score: 0.7 }),
+    await service.chat({
+      type: "staff",
+      question: "hello",
+      limit: 5,
+      min_score: 0.7,
+    }),
     {
       answer:
         "Your question is being forwarded to the admin. Please wait a moment.",
@@ -1276,11 +1432,17 @@ async function withPlanner<T>(
 }
 
 function plannerMcp(
-  tools: Array<{ name: string; description?: string; inputSchema?: { required?: string[]; properties?: Record<string, unknown> } }>,
+  tools: Array<{
+    name: string;
+    description?: string;
+    inputSchema?: { required?: string[]; properties?: Record<string, unknown> };
+  }>,
   calls: Array<{ name: string; arguments: Record<string, unknown> }>,
 ): PlannerMcp {
   return {
-    async listTools() { return tools; },
+    async listTools() {
+      return tools;
+    },
     async callTool(_type, name, arguments_) {
       calls.push({ name, arguments: arguments_ });
       return { content: [{ type: "text", text: `${name} result` }] };
@@ -1291,102 +1453,238 @@ function plannerMcp(
 const staffTool = (name: string, description = "Returns staff details") => ({
   name,
   description,
-  inputSchema: { required: ["staff_id"], properties: { staff_id: {}, question: {} } },
+  inputSchema: {
+    required: ["staff_id"],
+    properties: { staff_id: {}, question: {} },
+  },
 });
 
 test("planner selects only an advertised historical-capable tool", async () => {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-  await withPlanner([nativeNoCalls(), plannerCall("schedule_history", {}), finalAnswer("Past schedules are available.")], async (requests) => {
-    const service = createRagService(config, embedder, store, plannerMcp([staffTool("schedule_history", "Returns historical staff schedules")], calls));
-    const response = await service.chat({ type: "staff", question: "show my last few schedules", limit: 5, min_score: 0.7, staff_id: "STAFF-1" });
-    assert.equal(response.answer, "Past schedules are available.");
-    assert.deepEqual(calls, [{ name: "schedule_history", arguments: { question: "show my last few schedules", staff_id: "STAFF-1" } }]);
-    assert.equal(requests[0]?.tool_choice, "auto");
-    assert.equal("tools" in requests[1]!, false);
-  });
+  await withPlanner(
+    [
+      nativeNoCalls(),
+      plannerCall("schedule_history", {}),
+      finalAnswer("Past schedules are available."),
+    ],
+    async (requests) => {
+      const service = createRagService(
+        config,
+        embedder,
+        store,
+        plannerMcp(
+          [staffTool("schedule_history", "Returns historical staff schedules")],
+          calls,
+        ),
+      );
+      const response = await service.chat({
+        type: "staff",
+        question: "show my last few schedules",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      });
+      assert.equal(response.answer, "Past schedules are available.");
+      assert.deepEqual(calls, [
+        {
+          name: "schedule_history",
+          arguments: {
+            question: "show my last few schedules",
+            staff_id: "STAFF-1",
+          },
+        },
+      ]);
+      assert.equal(requests[0]?.tool_choice, "auto");
+      assert.equal("tools" in requests[1]!, false);
+    },
+  );
 });
 
 test("upcoming-only catalog with empty planner calls falls back", async () => {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-  await withPlanner([nativeNoCalls(), { role: "assistant", content: JSON.stringify({ calls: [] }) }], async () => {
-    const service = createRagService(config, embedder, store, plannerMcp([staffTool("upcoming", "Returns upcoming schedules only")], calls));
-    const response = await service.chat({ type: "staff", question: "last schedules", limit: 5, min_score: 0.7, staff_id: "STAFF-1" });
-    assert.equal(response.route, "fallback");
-    assert.deepEqual(calls, []);
-  });
+  await withPlanner(
+    [
+      nativeNoCalls(),
+      { role: "assistant", content: JSON.stringify({ calls: [] }) },
+    ],
+    async () => {
+      const service = createRagService(
+        config,
+        embedder,
+        store,
+        plannerMcp(
+          [staffTool("upcoming", "Returns upcoming schedules only")],
+          calls,
+        ),
+      );
+      const response = await service.chat({
+        type: "staff",
+        question: "last schedules",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      });
+      assert.equal(response.route, "fallback");
+      assert.deepEqual(calls, []);
+    },
+  );
 });
 
 for (const plan of [
   "not json",
   JSON.stringify({ calls: [{ name: "unknown", arguments: {} }] }),
-  JSON.stringify({ calls: Array.from({ length: 4 }, () => ({ name: "staff", arguments: {} })) }),
-  JSON.stringify({ calls: [{ name: "staff", arguments: {} }, { name: "staff", arguments: {} }] }),
+  JSON.stringify({
+    calls: Array.from({ length: 4 }, () => ({ name: "staff", arguments: {} })),
+  }),
+  JSON.stringify({
+    calls: [
+      { name: "staff", arguments: {} },
+      { name: "staff", arguments: {} },
+    ],
+  }),
 ]) {
   test(`invalid planner output executes no optional calls: ${plan.slice(0, 12)}`, async () => {
-    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-    await withPlanner([nativeNoCalls(), { role: "assistant", content: plan }], async () => {
-      const service = createRagService(config, embedder, store, plannerMcp([staffTool("staff")], calls));
-      const response = await service.chat({ type: "staff", question: "details", limit: 5, min_score: 0.7, staff_id: "STAFF-1" });
-      assert.equal(response.route, "fallback");
-      assert.deepEqual(calls, []);
-    });
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> =
+      [];
+    await withPlanner(
+      [nativeNoCalls(), { role: "assistant", content: plan }],
+      async () => {
+        const service = createRagService(
+          config,
+          embedder,
+          store,
+          plannerMcp([staffTool("staff")], calls),
+        );
+        const response = await service.chat({
+          type: "staff",
+          question: "details",
+          limit: 5,
+          min_score: 0.7,
+          staff_id: "STAFF-1",
+        });
+        assert.equal(response.route, "fallback");
+        assert.deepEqual(calls, []);
+      },
+    );
   });
 }
 
 test("FAQ planner may choose no calls", async () => {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-  const faqOnlyStore: VectorStore = { ...store, async search() { return [{ id: "faq", score: 0.9, payload: { answer: "FAQ answer" } }]; } };
-  await withPlanner([nativeNoCalls(), { role: "assistant", content: JSON.stringify({ calls: [] }) }], async () => {
-    const response = await createRagService(config, embedder, faqOnlyStore, plannerMcp([staffTool("staff")], calls)).chat({ type: "staff", question: "FAQ", limit: 5, min_score: 0.7 });
-    assert.equal(response.answer, "FAQ answer");
-    assert.deepEqual(calls, []);
-  });
+  const faqOnlyStore: VectorStore = {
+    ...store,
+    async search() {
+      return [{ id: "faq", score: 0.9, payload: { answer: "FAQ answer" } }];
+    },
+  };
+  await withPlanner(
+    [
+      nativeNoCalls(),
+      { role: "assistant", content: JSON.stringify({ calls: [] }) },
+    ],
+    async () => {
+      const response = await createRagService(
+        config,
+        embedder,
+        faqOnlyStore,
+        plannerMcp([staffTool("staff")], calls),
+      ).chat({ type: "staff", question: "FAQ", limit: 5, min_score: 0.7 });
+      assert.equal(response.answer, "FAQ answer");
+      assert.deepEqual(calls, []);
+    },
+  );
 });
 
 test("malformed native tool calls fall back to the JSON planner", async () => {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-  await withPlanner([
-    {
-      role: "assistant",
-      content: null,
-      tool_calls: [
+  await withPlanner(
+    [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_bad",
+            type: "function",
+            function: { name: "staff", arguments: "not json" },
+          },
+        ],
+      },
+      plannerCall("staff", {}),
+      finalAnswer("Planner fallback answer."),
+    ],
+    async (requests) => {
+      const response = await createRagService(
+        config,
+        embedder,
+        store,
+        plannerMcp([staffTool("staff")], calls),
+      ).chat({
+        type: "staff",
+        question: "details",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      });
+      assert.equal(response.answer, "Planner fallback answer.");
+      assert.deepEqual(calls, [
         {
-          id: "call_bad",
-          type: "function",
-          function: { name: "staff", arguments: "not json" },
+          name: "staff",
+          arguments: { question: "details", staff_id: "STAFF-1" },
         },
-      ],
+      ]);
+      assert.equal(requests[0]?.tool_choice, "auto");
+      assert.equal("tools" in requests[1]!, false);
     },
-    plannerCall("staff", {}),
-    finalAnswer("Planner fallback answer."),
-  ], async (requests) => {
-    const response = await createRagService(config, embedder, store, plannerMcp([staffTool("staff")], calls)).chat({ type: "staff", question: "details", limit: 5, min_score: 0.7, staff_id: "STAFF-1" });
-    assert.equal(response.answer, "Planner fallback answer.");
-    assert.deepEqual(calls, [{ name: "staff", arguments: { question: "details", staff_id: "STAFF-1" } }]);
-    assert.equal(requests[0]?.tool_choice, "auto");
-    assert.equal("tools" in requests[1]!, false);
-  });
+  );
 });
 
 test("duplicate native tool-call IDs fall back before optional MCP execution", async () => {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-  await withPlanner([
-    {
-      role: "assistant",
-      content: null,
-      tool_calls: [
-        { id: "call_duplicate", type: "function", function: { name: "staff", arguments: "{}" } },
-        { id: "call_duplicate", type: "function", function: { name: "team", arguments: "{}" } },
-      ],
+  await withPlanner(
+    [
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_duplicate",
+            type: "function",
+            function: { name: "staff", arguments: "{}" },
+          },
+          {
+            id: "call_duplicate",
+            type: "function",
+            function: { name: "team", arguments: "{}" },
+          },
+        ],
+      },
+      plannerCall("staff", {}),
+      finalAnswer("Planner fallback answer."),
+    ],
+    async (requests) => {
+      const response = await createRagService(
+        config,
+        embedder,
+        store,
+        plannerMcp([staffTool("staff"), staffTool("team")], calls),
+      ).chat({
+        type: "staff",
+        question: "details",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      });
+      assert.equal(response.answer, "Planner fallback answer.");
+      assert.deepEqual(calls, [
+        {
+          name: "staff",
+          arguments: { question: "details", staff_id: "STAFF-1" },
+        },
+      ]);
+      assert.equal(requests.length, 3);
     },
-    plannerCall("staff", {}),
-    finalAnswer("Planner fallback answer."),
-  ], async (requests) => {
-    const response = await createRagService(config, embedder, store, plannerMcp([staffTool("staff"), staffTool("team")], calls)).chat({ type: "staff", question: "details", limit: 5, min_score: 0.7, staff_id: "STAFF-1" });
-    assert.equal(response.answer, "Planner fallback answer.");
-    assert.deepEqual(calls, [{ name: "staff", arguments: { question: "details", staff_id: "STAFF-1" } }]);
-    assert.equal(requests.length, 3);
-  });
+  );
 });
 
 test("native replay capability rejection propagates after optional MCP execution", async () => {
@@ -1396,18 +1694,41 @@ test("native replay capability rejection propagates after optional MCP execution
     if (typeof init?.body !== "string") throw new Error("expected JSON body");
     requests.push(JSON.parse(init.body) as Record<string, unknown>);
     if (requests.length === 2) {
-      return new Response(JSON.stringify({ error: { message: "Unsupported parameter: tools" } }), { status: 400, headers: { "content-type": "application/json" } });
+      return new Response(
+        JSON.stringify({ error: { message: "Unsupported parameter: tools" } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
     }
-    return new Response(JSON.stringify({ choices: [{ message: nativeToolCall("staff", {}) }] }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(
+      JSON.stringify({ choices: [{ message: nativeToolCall("staff", {}) }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
   }) satisfies typeof fetch;
   try {
-    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-    const service = createRagService(config, embedder, store, plannerMcp([staffTool("staff")], calls));
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> =
+      [];
+    const service = createRagService(
+      config,
+      embedder,
+      store,
+      plannerMcp([staffTool("staff")], calls),
+    );
     await assert.rejects(
-      service.chat({ type: "staff", question: "details", limit: 5, min_score: 0.7, staff_id: "STAFF-1" }),
+      service.chat({
+        type: "staff",
+        question: "details",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      }),
       /Unsupported parameter: tools/,
     );
-    assert.deepEqual(calls, [{ name: "staff", arguments: { question: "details", staff_id: "STAFF-1" } }]);
+    assert.deepEqual(calls, [
+      {
+        name: "staff",
+        arguments: { question: "details", staff_id: "STAFF-1" },
+      },
+    ]);
     assert.equal(requests.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1421,14 +1742,35 @@ test("tools capability rejection falls back to the JSON planner", async () => {
     if (typeof init?.body !== "string") throw new Error("expected JSON body");
     requests.push(JSON.parse(init.body) as Record<string, unknown>);
     if (requests.length === 1) {
-      return new Response(JSON.stringify({ error: { message: "Unsupported parameter: tools" } }), { status: 400, headers: { "content-type": "application/json" } });
+      return new Response(
+        JSON.stringify({ error: { message: "Unsupported parameter: tools" } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
     }
-    const message = requests.length === 2 ? plannerCall("staff", {}) : finalAnswer("Planner fallback answer.");
-    return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200, headers: { "content-type": "application/json" } });
+    const message =
+      requests.length === 2
+        ? plannerCall("staff", {})
+        : finalAnswer("Planner fallback answer.");
+    return new Response(JSON.stringify({ choices: [{ message }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
   }) satisfies typeof fetch;
   try {
-    const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
-    const response = await createRagService(config, embedder, store, plannerMcp([staffTool("staff")], calls)).chat({ type: "staff", question: "details", limit: 5, min_score: 0.7, staff_id: "STAFF-1" });
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> =
+      [];
+    const response = await createRagService(
+      config,
+      embedder,
+      store,
+      plannerMcp([staffTool("staff")], calls),
+    ).chat({
+      type: "staff",
+      question: "details",
+      limit: 5,
+      min_score: 0.7,
+      staff_id: "STAFF-1",
+    });
     assert.equal(response.answer, "Planner fallback answer.");
     assert.equal(requests[0]?.tool_choice, "auto");
     assert.equal("tools" in requests[1]!, false);
@@ -1440,10 +1782,36 @@ test("tools capability rejection falls back to the JSON planner", async () => {
 test("planner executes exactly three calls in order then synthesizes once", async () => {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
   const tools = [staffTool("first"), staffTool("second"), staffTool("third")];
-  await withPlanner([nativeNoCalls(), { role: "assistant", content: JSON.stringify({ calls: tools.map(({ name }) => ({ name, arguments: {} })) }) }, finalAnswer("Synthesized answer")], async (requests) => {
-    const response = await createRagService(config, embedder, store, plannerMcp(tools, calls)).chat({ type: "staff", question: "details", limit: 5, min_score: 0.7, staff_id: "STAFF-1" });
-    assert.equal(response.answer, "Synthesized answer");
-    assert.deepEqual(calls.map(({ name }) => name), ["first", "second", "third"]);
-    assert.equal(requests.length, 3);
-  });
+  await withPlanner(
+    [
+      nativeNoCalls(),
+      {
+        role: "assistant",
+        content: JSON.stringify({
+          calls: tools.map(({ name }) => ({ name, arguments: {} })),
+        }),
+      },
+      finalAnswer("Synthesized answer"),
+    ],
+    async (requests) => {
+      const response = await createRagService(
+        config,
+        embedder,
+        store,
+        plannerMcp(tools, calls),
+      ).chat({
+        type: "staff",
+        question: "details",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      });
+      assert.equal(response.answer, "Synthesized answer");
+      assert.deepEqual(
+        calls.map(({ name }) => name),
+        ["first", "second", "third"],
+      );
+      assert.equal(requests.length, 3);
+    },
+  );
 });

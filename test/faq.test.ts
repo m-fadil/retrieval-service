@@ -34,14 +34,15 @@ function createStore(): VectorStore {
 
 test("faq singleton reindex status is not started before a run", async () => {
   const faq = createFaqService(
-    { async embed() { return [1, 2, 3]; } },
+    {
+      async embed() {
+        return [1, 2, 3];
+      },
+    },
     createStore(),
   );
 
-  assert.deepEqual(
-    await faq.reindexStatus(),
-    { status: "not_started" },
-  );
+  assert.deepEqual(await faq.reindexStatus(), { status: "not_started" });
 });
 
 test("faq async reindex reports processing and completes", async () => {
@@ -104,7 +105,11 @@ test("faq async reindex reports processing and completes", async () => {
 
 test("faq singleton reindex status reports failures", async () => {
   const faq = createFaqService(
-    { async embed() { throw new Error("embedding unavailable"); } },
+    {
+      async embed() {
+        throw new Error("embedding unavailable");
+      },
+    },
     createStore(),
   );
 

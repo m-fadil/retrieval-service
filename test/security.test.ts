@@ -390,7 +390,10 @@ test("faq generation returns a validated draft and is auth-guarded", async () =>
       payload: {
         messages: [
           { sender_type: "User", message: "How do I freeze my membership?" },
-          { sender_type: "Admin", message: "Open Membership and choose Freeze." },
+          {
+            sender_type: "Admin",
+            message: "Open Membership and choose Freeze.",
+          },
         ],
       },
     });

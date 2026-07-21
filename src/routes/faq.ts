@@ -9,7 +9,10 @@ import type { FaqService } from "../services/faq.js";
 import type { RagService } from "../services/rag.js";
 
 // Authentication is enforced globally in buildApp; see routes/auth.ts.
-export function faqRoutes(faq: FaqService, rag: RagService): FastifyPluginAsync {
+export function faqRoutes(
+  faq: FaqService,
+  rag: RagService,
+): FastifyPluginAsync {
   return async (app) => {
     app.post("/faq/bulk", async (request) =>
       faq.bulk(FaqBulkRequestSchema.parse(request.body)),
@@ -22,7 +25,10 @@ export function faqRoutes(faq: FaqService, rag: RagService): FastifyPluginAsync 
     // Distils a support transcript into a draft FAQ. Returns the draft only;
     // deciding whether to store it is the caller's, via /search for dedup.
     app.post("/faq/generate", async (request) =>
-      rag.generateFaq(FaqGenerateRequestSchema.parse(request.body), request.log),
+      rag.generateFaq(
+        FaqGenerateRequestSchema.parse(request.body),
+        request.log,
+      ),
     );
 
     app.put<{ Params: { id: string } }>("/faq/:id", async (request) =>
