@@ -27,10 +27,19 @@ export const SearchRequestSchema = AnswerRequestSchema.extend({
   source: z.string().min(1).optional(),
 });
 
+export const ChatHistoryMessageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().trim().min(1),
+});
+
 export const ChatRequestSchema = z
   .object({
     question: z.string().trim().optional(),
     message: z.string().trim().optional(),
+    // Recent conversation turns, oldest first, sent by the Frappe caller.
+    // Lets follow-ups ("Yes", "the first one") be condensed into standalone
+    // questions before retrieval; without them the service has no memory.
+    history: z.array(ChatHistoryMessageSchema).max(20).optional(),
     limit: z.number().int().positive().max(20).default(5),
     min_score: z.number().min(0).max(1).default(0.7),
     job_id: z.string().trim().min(1).optional(),
@@ -59,6 +68,7 @@ export const ChatRequestSchema = z
       question,
       limit: input.limit,
       min_score: input.min_score,
+      ...(input.history?.length ? { history: input.history } : {}),
       ...(input.job_id ? { job_id: input.job_id } : {}),
       ...(input.staff_id ? { staff_id: input.staff_id } : {}),
       ...(input.job_schedule_id
@@ -89,6 +99,7 @@ export const QueryRequestSchema = AnswerRequestSchema;
 export type IndexRequest = z.infer<typeof IndexRequestSchema>;
 export type AnswerRequest = z.infer<typeof AnswerRequestSchema>;
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
+export type ChatHistoryMessage = z.infer<typeof ChatHistoryMessageSchema>;
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export type ChatResponse<Source = unknown> = {
   answer: string;

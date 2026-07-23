@@ -38,6 +38,9 @@ retrieval-service
 Ini bukan pipeline linear; urutannya berlapis dengan fallback:
 
 ```
+0. condense            -> hanya bila request membawa `history`: LLM menulis
+                          ulang follow-up ("Yes", "yang pertama") menjadi
+                          pertanyaan mandiri; gagal = pakai pesan mentah
 1. faq_search          -> Qdrant, difilter source = frappe_faq
 2. tools/list          -> MCP Frappe. Gagal => tools = [] dan alur lanjut
 3. get_environment_context  (wajib, hanya bila ada job_id)
@@ -46,6 +49,11 @@ Ini bukan pipeline linear; urutannya berlapis dengan fallback:
                           JSON ketat {"calls":[...]}; output tak valid = 0 call
 6. compose             -> LLM menyusun jawaban akhir dari FAQ + hasil tool
 ```
+
+Service ini stateless: memori percakapan adalah milik Frappe (Chat Session).
+Caller mengirim `history` (maks 20 turn `{role: user|assistant, content}`,
+terlama dulu) pada `/chat` dan `/chat/async`; tanpa itu setiap pesan dijawab
+seolah membuka percakapan baru.
 
 Route yang dilaporkan di response:
 
@@ -119,12 +127,18 @@ sedang bermasalah.
   "actor": "staff@example.com",
   "job_id": "JOB-0001",
   "limit": 5,
-  "min_score": 0.7
+  "min_score": 0.7,
+  "history": [
+    { "role": "user", "content": "Job apa saja yang tersedia minggu ini?" },
+    { "role": "assistant", "content": "Ada dua job: ... Mau lihat syaratnya?" }
+  ]
 }
 ```
 
-`message` diterima sebagai alias `question`. `type` memilih katalog tool
-(`staff` / `manager`) tetapi **bukan** kontrol otorisasi — lihat §17.3.
+`message` diterima sebagai alias `question`. `history` opsional (maks 20 turn,
+terlama dulu) dan dipakai step condense untuk menulis ulang follow-up menjadi
+pertanyaan mandiri. `type` memilih katalog tool (`staff` / `manager`) tetapi
+**bukan** kontrol otorisasi — lihat §17.3.
 
 **Contoh response:**
 
