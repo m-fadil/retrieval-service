@@ -5,7 +5,7 @@ import type {
 } from "../schemas/query.js";
 import type { FrappeClient } from "./frappe.js";
 import type { SearchHit } from "./qdrant.js";
-import type { ChatLog, RagService } from "./rag.js";
+import { ChatFailedError, type ChatLog, type RagService } from "./rag.js";
 
 /**
  * Where the final answer lands. Fixed rather than caller-supplied: accepting a
@@ -87,6 +87,9 @@ export function createChatDispatcher(
           reason: "chat_failed",
           tools_used: [],
           sources: [],
+          // The LLM calls that completed before the failure were still
+          // billed; their tally rides out on the error.
+          ...(error instanceof ChatFailedError ? { usage: error.usage } : {}),
         };
       }
 
@@ -94,7 +97,9 @@ export function createChatDispatcher(
         {
           session_id: envelope.session_id,
           request_id: envelope.request_id,
-          question: input.question,
+          // Deliberately no question/answer text beyond `answer` itself:
+          // Frappe never reads the question here (its audit log strips text
+          // keys), so the member's words do not make a needless round trip.
           answer: response.answer,
           route: response.route,
           reason: response.reason,
@@ -105,8 +110,9 @@ export function createChatDispatcher(
           sources: (response.sources ?? []).map((source) => ({
             id: source.id,
           })),
-          // Cost accounting for the audit log; absent when chat failed
-          // before any LLM call completed.
+          // Cost accounting for the audit log. Present on failed chats too
+          // (partial tally of the calls that completed); absent only when
+          // the chat implementation reports no usage at all.
           ...(response.usage ? { usage: response.usage } : {}),
           duration_ms: Math.round(performance.now() - started),
         },

@@ -55,6 +55,21 @@ type PlannedChatTool = {
 
 type PlannerOutput = { calls: PlannedChatTool[] };
 
+/**
+ * A failed chat still carries its usage tally: calls that completed before
+ * the failure were billed, and the dispatcher forwards their cost to the
+ * audit log instead of reporting the most expensive failures as zero spend.
+ */
+export class ChatFailedError extends Error {
+  constructor(
+    cause: unknown,
+    readonly usage: ChatUsage,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "ChatFailedError";
+  }
+}
+
 type TimedLog = ChatLog | undefined;
 
 async function timed<T>(
@@ -657,10 +672,23 @@ Question: ${question}`,
   ): Promise<ChatResponse<SearchHit>> {
     const started = performance.now();
     const usage = newChatUsage();
-    const response = await chatFlow(request, usage, log);
-    const duration_ms = Math.round(performance.now() - started);
-    log?.info({ stage: "chat.usage_total", ...usage, duration_ms });
-    return { ...response, usage, duration_ms };
+    try {
+      const response = await chatFlow(request, usage, log);
+      const duration_ms = Math.round(performance.now() - started);
+      log?.info({ stage: "chat.usage_total", ...usage, duration_ms });
+      return { ...response, usage, duration_ms };
+    } catch (error) {
+      // The calls that completed before the failure were still billed; log
+      // and forward the partial tally instead of losing it with the error.
+      const duration_ms = Math.round(performance.now() - started);
+      log?.info({
+        stage: "chat.usage_total",
+        ...usage,
+        duration_ms,
+        failed: true,
+      });
+      throw new ChatFailedError(error, usage);
+    }
   }
 
   async function chatFlow(

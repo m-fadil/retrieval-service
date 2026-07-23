@@ -172,9 +172,12 @@ yang selesai dalam satu chat (condense, tool selection, replay, planner,
 compose) — angka billing provider, bukan estimasi; token embedding tidak
 termasuk. Call yang backend-nya tidak melaporkan usage tetap menaikkan
 `llm_calls` tetapi menyumbang 0 token. `duration_ms` adalah waktu proses
-wall-clock. Keduanya juga dikirim di payload callback `/chat/async` (usage
-absen bila chat gagal sebelum ada call yang selesai) dan dicatat Frappe di
-doctype **Chat AI Audit Log**. Log per stage tetap ada; baris ringkasan
+wall-clock. Keduanya juga dikirim di payload callback `/chat/async` — termasuk
+saat chat gagal: call yang sempat selesai sebelum kegagalan tetap dibayar,
+jadi tally parsialnya ikut dikirim (kegagalan justru sering yang paling mahal)
+— dan dicatat Frappe di doctype **Chat AI Audit Log**. Payload callback tidak
+mengulang `question`: Frappe tidak membacanya dan audit log-nya memang
+menanggalkan semua teks pesan. Log per stage tetap ada; baris ringkasan
 `chat.usage_total` merangkumnya per request.
 
 ### 4.2 Qdrant

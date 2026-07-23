@@ -56,11 +56,19 @@ function staleFilter(source: string, keepIds: string[]) {
  * dropCollection. Reads and deletes treat that as an empty collection.
  */
 export function isMissingCollection(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { status, data } = error as {
+    status?: unknown;
+    data?: { status?: { error?: unknown } };
+  };
+  if (status !== 404) return false;
+  // A bare 404 is not enough: a misconfigured QDRANT_URL (wrong path, proxy)
+  // also yields 404s, and treating those as an empty collection would make
+  // every search silently return nothing. Require Qdrant's own error body,
+  // e.g. "Not found: Collection `knowledge_base` doesn't exist!".
+  const detail = data?.status?.error;
   return (
-    typeof error === "object" &&
-    error !== null &&
-    "status" in error &&
-    (error as { status?: unknown }).status === 404
+    typeof detail === "string" && /collection.*doesn't exist/i.test(detail)
   );
 }
 

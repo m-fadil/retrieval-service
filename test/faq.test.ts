@@ -194,3 +194,59 @@ test("faq recreate refuses while a reindex is processing", async () => {
   assert.equal(dropped.length, 0);
   gate.resolve();
 });
+
+test("faq recreate blocks a concurrent reindex while the drop is in flight", async () => {
+  const gate = deferred();
+  const store: VectorStore = {
+    ...createStore(),
+    async dropCollection() {
+      await gate.promise;
+    },
+  };
+  const faq = createFaqService(
+    {
+      async embed() {
+        return [1, 2, 3];
+      },
+    },
+    store,
+  );
+
+  const items = [{ id: "FAQ-1", question: "Q", answer: "A", enabled: true }];
+  const first = faq.recreate({ items });
+  // The claim must land before the drop's await: a reindex arriving while
+  // the collection is being dropped must refuse, not start a second run.
+  const second = await faq.reindex({ items });
+  assert.deepEqual(second, { status: "processing" });
+  gate.resolve();
+  assert.deepEqual(await first, { status: "accepted" });
+});
+
+test("faq recreate releases the claim as failed when the drop throws", async () => {
+  const store: VectorStore = {
+    ...createStore(),
+    async dropCollection() {
+      throw new Error("qdrant down");
+    },
+  };
+  const faq = createFaqService(
+    {
+      async embed() {
+        return [1, 2, 3];
+      },
+    },
+    store,
+  );
+
+  await assert.rejects(
+    () =>
+      faq.recreate({
+        items: [{ id: "FAQ-1", question: "Q", answer: "A", enabled: true }],
+      }),
+    /qdrant down/,
+  );
+  const status = await faq.reindexStatus();
+  assert.equal(status.status, "failed");
+  // A stuck "processing" claim would refuse every later run forever.
+  assert.deepEqual(await faq.reindex({ items: [] }), { status: "accepted" });
+});

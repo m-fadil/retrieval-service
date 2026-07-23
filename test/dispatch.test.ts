@@ -6,7 +6,7 @@ import {
 } from "../src/services/dispatch.js";
 import type { ChatResponse } from "../src/schemas/query.js";
 import type { SearchHit } from "../src/services/qdrant.js";
-import type { ChatLog } from "../src/services/rag.js";
+import { ChatFailedError, type ChatLog } from "../src/services/rag.js";
 
 const input = {
   question: "How do I check in?",
@@ -52,7 +52,7 @@ test("dispatch delivers the chat result to the Frappe callback", async () => {
   assert.deepEqual(body, {
     session_id: "CHAT-1",
     request_id: "req-1",
-    question: "How do I check in?",
+    // No question echo: Frappe never reads it and its audit log strips text.
     answer: "Use the QR scanner.",
     route: "faq",
     reason: "faq_match",
@@ -115,9 +115,44 @@ test("dispatch escalates through the callback when chat fails", async () => {
   assert.equal(calls[0]!.body.needs_admin, true);
   assert.equal(calls[0]!.body.reason, "chat_failed");
   assert.equal(calls[0]!.body.request_id, "req-1");
-  // Even a failed chat reports how long it burned; there is no usage to send.
+  // Even a failed chat reports how long it burned; a plain error carries no
+  // tally, so there is no usage to send.
   assert.equal(typeof calls[0]!.body.duration_ms, "number");
   assert.ok(!("usage" in calls[0]!.body));
+});
+
+test("dispatch forwards the partial usage of a failed chat", async () => {
+  const calls: Array<{ body: Record<string, unknown> }> = [];
+  const usage = {
+    model: "large",
+    llm_calls: 2,
+    prompt_tokens: 2000,
+    completion_tokens: 40,
+    total_tokens: 2040,
+  };
+  const dispatcher = createChatDispatcher(
+    {
+      async chat() {
+        // What rag.chat throws when the flow fails after some LLM calls
+        // completed: the tally of the billed calls rides out on the error.
+        throw new ChatFailedError(new Error("compose timeout"), usage);
+      },
+    },
+    {
+      async call<T>(_method: string, body?: unknown) {
+        calls.push({ body: body as Record<string, unknown> });
+        return {} as T;
+      },
+    },
+    [],
+  );
+
+  await dispatcher.dispatch(input, envelope);
+
+  assert.equal(calls[0]!.body.needs_admin, true);
+  assert.equal(calls[0]!.body.reason, "chat_failed");
+  // The spend of the failed chat still reaches the audit log.
+  assert.deepEqual(calls[0]!.body.usage, usage);
 });
 
 test("dispatch retries callback delivery until it succeeds", async () => {

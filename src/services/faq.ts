@@ -160,18 +160,20 @@ export function createFaqService(
     }
   }
 
-  function startReindex(
-    input: FaqReindexRequest,
-    log?: FaqLog,
-  ): FaqReindexStart {
-    reindexState = {
-      status: "processing",
+  /**
+   * Claims the reindex state machine synchronously — before any await — so a
+   * concurrent reindex/recreate arriving mid-operation sees "processing"
+   * instead of starting a second run.
+   */
+  function claimReindex(input: FaqReindexRequest) {
+    const claimed = {
+      status: "processing" as const,
       started_at: new Date().toISOString(),
       processed: 0,
       total: input.items.length,
     };
-    void runReindex(input, log);
-    return { status: "accepted" };
+    reindexState = claimed;
+    return claimed;
   }
 
   return {
@@ -198,16 +200,37 @@ export function createFaqService(
     },
     async reindex(input, log) {
       if (reindexState.status === "processing") return { status: "processing" };
-      return startReindex(input, log);
+      claimReindex(input);
+      void runReindex(input, log);
+      return { status: "accepted" };
     },
     async recreate(input, log) {
       if (reindexState.status === "processing") return { status: "processing" };
-      // The collection is dropped wholesale — every source, not just FAQ.
-      // This endpoint exists for embedding model/dimension changes, where all
-      // stored vectors are invalid; non-FAQ documents must be re-sent via
-      // POST /index afterwards.
-      await store.dropCollection();
-      return startReindex(input, log);
+      // The state must be claimed before the drop's await: a reindex request
+      // arriving during the drop would otherwise pass its own guard and run
+      // concurrently against a collection being yanked out from under it.
+      const claimed = claimReindex(input);
+      try {
+        // The collection is dropped wholesale — every source, not just FAQ.
+        // This endpoint exists for embedding model/dimension changes, where
+        // all stored vectors are invalid; non-FAQ documents must be re-sent
+        // via POST /index afterwards.
+        await store.dropCollection();
+      } catch (error) {
+        // Release the claim as a failed run, or the state machine would stay
+        // "processing" forever and refuse every later reindex.
+        reindexState = {
+          status: "failed",
+          started_at: claimed.started_at,
+          finished_at: new Date().toISOString(),
+          processed: 0,
+          total: input.items.length,
+          error: error instanceof Error ? error.message : String(error),
+        };
+        throw error;
+      }
+      void runReindex(input, log);
+      return { status: "accepted" };
     },
     async reindexStatus() {
       return reindexState;

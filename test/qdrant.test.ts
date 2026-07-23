@@ -28,4 +28,11 @@ test("isMissingCollection recognises the qdrant 404 error shape", () => {
   assert.equal(isMissingCollection({ status: 500 }), false);
   assert.equal(isMissingCollection(new Error("Not Found")), false);
   assert.equal(isMissingCollection(null), false);
+  // A bare 404 without Qdrant's error body (misconfigured URL, proxy) must
+  // fail loudly instead of masquerading as an empty collection.
+  assert.equal(isMissingCollection({ status: 404 }), false);
+  assert.equal(
+    isMissingCollection({ status: 404, data: { status: { error: 404 } } }),
+    false,
+  );
 });
