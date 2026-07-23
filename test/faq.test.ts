@@ -23,6 +23,7 @@ function createStore(): VectorStore {
     async delete() {},
     async deleteBySource() {},
     async deleteBySourceExcept() {},
+    async dropCollection() {},
     async countBySourceExcept() {
       return 0;
     },
@@ -58,6 +59,7 @@ test("faq async reindex reports processing and completes", async () => {
     async delete() {},
     async deleteBySource() {},
     async deleteBySourceExcept() {},
+    async dropCollection() {},
     async countBySourceExcept() {
       return 0;
     },
@@ -123,4 +125,72 @@ test("faq singleton reindex status reports failures", async () => {
   assert.match(failed.started_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.match(failed.finished_at, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(failed.error, "embedding unavailable");
+});
+
+test("faq recreate drops the collection before reindexing", async () => {
+  const calls: string[] = [];
+  const store: VectorStore = {
+    ...createStore(),
+    async dropCollection() {
+      calls.push("drop");
+    },
+    async upsert() {
+      calls.push("upsert");
+    },
+  };
+  const faq = createFaqService(
+    {
+      async embed() {
+        return [1, 2, 3];
+      },
+    },
+    store,
+  );
+
+  const start = await faq.recreate({
+    items: [{ id: "FAQ-1", question: "Q", answer: "A", enabled: true }],
+  });
+  assert.deepEqual(start, { status: "accepted" });
+
+  for (let i = 0; i < 50 && !calls.includes("upsert"); i += 1) {
+    await new Promise((tick) => setImmediate(tick));
+  }
+  assert.equal(calls[0], "drop");
+  assert.ok(calls.includes("upsert"));
+  const status = await faq.reindexStatus();
+  assert.equal(status.status, "completed");
+});
+
+test("faq recreate refuses while a reindex is processing", async () => {
+  const gate = deferred();
+  const dropped: string[] = [];
+  const store: VectorStore = {
+    ...createStore(),
+    async dropCollection() {
+      dropped.push("drop");
+    },
+    async upsert() {
+      await gate.promise;
+    },
+  };
+  const faq = createFaqService(
+    {
+      async embed() {
+        return [1, 2, 3];
+      },
+    },
+    store,
+  );
+
+  await faq.reindex({
+    items: [{ id: "FAQ-1", question: "Q", answer: "A", enabled: true }],
+  });
+  const second = await faq.recreate({
+    items: [{ id: "FAQ-1", question: "Q", answer: "A", enabled: true }],
+  });
+  assert.deepEqual(second, { status: "processing" });
+  // The guard must reject before dropping: a concurrent recreate must not
+  // yank the collection out from under the in-flight reindex.
+  assert.equal(dropped.length, 0);
+  gate.resolve();
 });

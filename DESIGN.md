@@ -25,7 +25,7 @@ Frappe Backend
 retrieval-service
   |
   |-- Fastify (guard API key + rate limit di root instance)
-  |-- Gemini embedding client
+  |-- Embedding client (OpenAI-compatible)
   |-- Qdrant retrieval (difilter per source)
   |-- MCP tool router --> Frappe (header X-Alpha-Actor)
   |-- OpenAI-compatible LLM client
@@ -66,7 +66,7 @@ FAQ (Frappe doc_events)
     v
 retrieval-service  /faq/bulk | /faq/reindex | PUT /faq/:id
     |
-    | question+answer -> Gemini embedding -> upsert
+    | question+answer -> embedding (OpenAI-compatible) -> upsert
     v
 Qdrant (payload: text, question, answer, source, content_hash, ...)
 ```
@@ -81,21 +81,22 @@ memanggil embedding, sehingga sinkronisasi berulang tidak berbiaya token.
 **Endpoint yang benar-benar ada.** Semua kecuali `/health` mewajibkan
 `Authorization: Bearer $RETRIEVAL_API_KEY`.
 
-| Method | Path                  | Fungsi                                              |
-| ------ | --------------------- | --------------------------------------------------- |
-| GET    | `/health`             | Liveness + status Qdrant. Publik.                   |
-| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM              |
-| POST   | `/chat/async`         | Seperti `/chat`, tapi 202 + callback ke Frappe      |
-| POST   | `/answer`             | Retrieval + jawaban LLM                             |
-| POST   | `/query`              | Alias `/answer` (kompatibilitas)                    |
-| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source` |
-| POST   | `/index`              | Index dokumen generik                               |
-| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                             |
-| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                    |
-| GET    | `/faq/reindex/status` | Status reindex terakhir                             |
-| POST   | `/faq/generate`       | Draft FAQ dari transkrip                            |
-| PUT    | `/faq/:id`            | Upsert satu FAQ                                     |
-| DELETE | `/faq/:id`            | Hapus satu FAQ                                      |
+| Method | Path                  | Fungsi                                               |
+| ------ | --------------------- | ---------------------------------------------------- |
+| GET    | `/health`             | Liveness + status Qdrant. Publik.                    |
+| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM               |
+| POST   | `/chat/async`         | Seperti `/chat`, tapi 202 + callback ke Frappe       |
+| POST   | `/answer`             | Retrieval + jawaban LLM                              |
+| POST   | `/query`              | Alias `/answer` (kompatibilitas)                     |
+| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source`  |
+| POST   | `/index`              | Index dokumen generik                                |
+| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                              |
+| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                     |
+| POST   | `/faq/recreate`       | Drop collection (semua source) lalu reindex asinkron |
+| GET    | `/faq/reindex/status` | Status reindex terakhir                              |
+| POST   | `/faq/generate`       | Draft FAQ dari transkrip                             |
+| PUT    | `/faq/:id`            | Upsert satu FAQ                                      |
+| DELETE | `/faq/:id`            | Hapus satu FAQ                                       |
 
 Tidak ada prefix `/v1` dan tidak ada `/ready` — `/health` merangkap keduanya.
 `/health` mengembalikan 200 selama proses hidup, dengan status dependency di
@@ -163,21 +164,23 @@ Detail implementasi yang relevan:
 - **Payload index `source`** dibuat agar filter per-source (dipakai FAQ search
   dan reindex) tetap cepat.
 
-### 4.3 Embedding Provider — Gemini
+### 4.3 Embedding Provider — endpoint OpenAI-compatible
 
-Embedding dihitung lewat **Gemini** (`@google/genai`), bukan model lokal dan
-bukan endpoint OpenAI-compatible.
+Embedding dihitung lewat endpoint **OpenAI-compatible** (`POST /embeddings`,
+mis. OpenRouter `https://openrouter.ai/api/v1`), bukan model lokal, memakai SDK
+`openai` yang sama dengan LLM.
 
-- Dikonfigurasi oleh `EMBEDDING_API_KEY` dan `EMBEDDING_MODEL` saja; **tidak ada
-  `EMBEDDING_API_URL`**.
+- Dikonfigurasi oleh `EMBEDDING_API_URL`, `EMBEDDING_API_KEY`, dan
+  `EMBEDDING_MODEL`; URL tanpa path otomatis diberi akhiran `/v1` (aturan yang
+  sama dengan `OPENAI_API_URL`).
 - `retrieval-service` tidak meng-install, men-download, maupun menyimpan model
   embedding lokal.
 - Dimensi collection Qdrant mengikuti model yang dipilih (lihat §4.2).
 - Setiap panggilan dibatasi `EMBEDDING_TIMEOUT_MS`.
 
-Embedding dan LLM sengaja memakai provider berbeda: keduanya dipilih atas
-kriteria yang berbeda (biaya per token vs kualitas penalaran) dan tidak ada
-alasan mengikatnya jadi satu.
+Embedding dan LLM boleh memakai provider/endpoint berbeda: keduanya dipilih
+atas kriteria yang berbeda (biaya per token vs kualitas penalaran), sehingga
+base URL, API key, dan modelnya dikonfigurasi terpisah.
 
 ### 4.4 LLM Provider
 
@@ -199,8 +202,7 @@ Node.js 22 LTS
 TypeScript
 Fastify 5
 Zod 4
-openai              (chat / tool calling, OpenAI-compatible)
-@google/genai       (embedding)
+openai              (chat / tool calling / embedding, OpenAI-compatible)
 @qdrant/js-client-rest
 ```
 
@@ -214,7 +216,7 @@ Alternatif yang dipertimbangkan dan alasan tidak dipilih:
 - **Go**: bagus untuk API service, tapi ekosistem klien LLM/embedding lebih matang
   di TypeScript.
 - **AI SDK (`ai` + `@ai-sdk/*`)**: sempat direncanakan, tidak jadi dipakai. SDK
-  `openai` dan `@google/genai` langsung memberi kontrol lebih eksplisit atas
+  `openai` langsung memberi kontrol lebih eksplisit atas
   bentuk request tool calling dan atas deteksi provider yang tidak mendukungnya —
   justru titik yang paling butuh penanganan khusus di service ini.
 
@@ -308,8 +310,9 @@ atas file `.env`.
 | `OPENAI_API_URL`    | Endpoint OpenAI-compatible                      |
 | `OPENAI_API_KEY`    | —                                               |
 | `OPENAI_MODEL`      | Nama model chat                                 |
-| `EMBEDDING_API_KEY` | API key Gemini                                  |
-| `EMBEDDING_MODEL`   | Nama model embedding Gemini                     |
+| `EMBEDDING_API_URL` | Endpoint embedding OpenAI-compatible            |
+| `EMBEDDING_API_KEY` | API key provider embedding                      |
+| `EMBEDDING_MODEL`   | Nama model embedding                            |
 
 **Opsional (dengan default)**
 
@@ -362,7 +365,7 @@ jalan berarti membuang panggilan LLM dan embedding yang **sudah dibayar**.
 ## 10. Dependencies
 
 ```bash
-npm install fastify zod openai @google/genai @qdrant/js-client-rest
+npm install fastify zod openai @qdrant/js-client-rest
 npm install -D typescript tsx @types/node prettier pino-pretty
 ```
 
@@ -382,7 +385,7 @@ Frappe mengirim FAQ lewat `doc_events`. Payload `PUT /faq/FAQ-0001`:
 }
 ```
 
-Internal: `question + answer -> content_hash -> (bila berubah) Gemini embedding
+Internal: `question + answer -> content_hash -> (bila berubah) embedding
 -> Qdrant upsert`.
 
 Untuk dokumen non-FAQ, `POST /index` menerima `{ documents: [{ id, text, source,
@@ -406,7 +409,7 @@ dipakai bersama dokumen `/index`, jadi pemanggil yang FAQ-oriented (dedup dan
 tool MCP `faq_search`) harus mengirim `"source": "frappe_faq"` — tanpa itu
 dokumen non-FAQ bisa muncul sebagai match tanpa question/answer.
 
-Internal: `question -> Gemini embedding -> Qdrant search (filter source) ->
+Internal: `question -> embedding -> Qdrant search (filter source) ->
 filter min_score`.
 
 `POST /chat` menjalankan alur lengkap di §3.
@@ -502,7 +505,7 @@ Nama `retrieval-service` dipertahankan dengan lingkup terdokumentasi mencakup RA
 
 - FAQ / SOP / static docs → Qdrant
 - Job / schedule / staff / payment / live data → MCP tool call ke Frappe
-- Embedding → selalu via Gemini API, bukan local model
+- Embedding → selalu via API OpenAI-compatible, bukan local model
 - LLM → selalu via provider API, hanya untuk reasoning & natural language response
 - Konteks tidak cukup → `needs_admin: true`, bukan jawaban karangan
 

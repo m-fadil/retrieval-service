@@ -22,8 +22,9 @@ const config: AppConfig = {
   OPENAI_API_URL: "https://llm.example.test",
   OPENAI_API_KEY: "sk-dev",
   OPENAI_MODEL: "large",
-  EMBEDDING_API_KEY: "gemini-dev",
-  EMBEDDING_MODEL: "gemini-embedding-2",
+  EMBEDDING_API_URL: "https://embed.example.test",
+  EMBEDDING_API_KEY: "embed-dev",
+  EMBEDDING_MODEL: "text-embedding-3-small",
   LOG_CHAT_REQUEST_BODY: false,
   LOG_LEVEL: "silent",
   LLM_TIMEOUT_MS: 60_000,
@@ -55,6 +56,7 @@ const store: VectorStore = {
   async delete() {},
   async deleteBySource() {},
   async deleteBySourceExcept() {},
+  async dropCollection() {},
   async countBySourceExcept() {
     return 0;
   },
@@ -104,6 +106,9 @@ const faq: FaqService = {
   async reindex() {
     return { status: "accepted" };
   },
+  async recreate() {
+    return { status: "accepted" };
+  },
   async reindexStatus() {
     return { status: "not_started" };
   },
@@ -120,6 +125,7 @@ const PROTECTED: Array<[Method, string, Record<string, unknown> | undefined]> =
     ["POST", "/index", { documents: [{ id: "1", text: "x" }] }],
     ["POST", "/faq/bulk", { items: [{ op: "delete", id: "x" }] }],
     ["POST", "/faq/reindex", { items: [] }],
+    ["POST", "/faq/recreate", { items: [] }],
     ["GET", "/faq/reindex/status", undefined],
     ["PUT", "/faq/FAQ-1", { question: "Q", answer: "A" }],
     ["DELETE", "/faq/FAQ-1", undefined],

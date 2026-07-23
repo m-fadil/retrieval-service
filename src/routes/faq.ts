@@ -20,6 +20,12 @@ export function faqRoutes(
     app.post("/faq/reindex", async (request) =>
       faq.reindex(FaqReindexRequestSchema.parse(request.body), request.log),
     );
+    // Drops the whole Qdrant collection (every source), then reindexes from
+    // the given items. For embedding model/dimension changes; non-FAQ
+    // documents must be re-sent via POST /index afterwards.
+    app.post("/faq/recreate", async (request) =>
+      faq.recreate(FaqReindexRequestSchema.parse(request.body), request.log),
+    );
     app.get("/faq/reindex/status", async () => faq.reindexStatus());
 
     // Distils a support transcript into a draft FAQ. Returns the draft only;

@@ -28,6 +28,11 @@ export interface VectorStore {
   deleteBySourceExcept(source: string, keepIds: string[]): Promise<void>;
   /** Counts what deleteBySourceExcept would remove, for reindex reporting. */
   countBySourceExcept(source: string, keepIds: string[]): Promise<number>;
+  /**
+   * Drops the whole collection — every source, not just FAQ. Exists for
+   * embedding model/dimension changes, where all stored vectors are invalid.
+   */
+  dropCollection(): Promise<void>;
   search(
     vector: number[],
     limit: number,
@@ -43,6 +48,20 @@ function staleFilter(source: string, keepIds: string[]) {
       ? { must_not: [{ key: "original_id", match: { any: keepIds } }] }
       : {}),
   };
+}
+
+/**
+ * True when Qdrant rejected the call because the collection does not exist —
+ * e.g. before the first upsert lazily creates it, or right after
+ * dropCollection. Reads and deletes treat that as an empty collection.
+ */
+export function isMissingCollection(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    (error as { status?: unknown }).status === 404
+  );
 }
 
 export function pointId(id: string): string {
@@ -127,55 +146,88 @@ export function createQdrantStore(
       });
     },
     async get(id) {
-      const [point] = await client.retrieve(config.QDRANT_COLLECTION, {
-        ids: [pointId(id)],
-        with_payload: true,
-      });
-      return point ? { id: point.id, payload: point.payload } : null;
+      try {
+        const [point] = await client.retrieve(config.QDRANT_COLLECTION, {
+          ids: [pointId(id)],
+          with_payload: true,
+        });
+        return point ? { id: point.id, payload: point.payload } : null;
+      } catch (error) {
+        if (isMissingCollection(error)) return null;
+        throw error;
+      }
     },
     async delete(ids) {
       if (!ids.length) return;
-      await client.delete(config.QDRANT_COLLECTION, {
-        points: ids.map(pointId),
-      });
+      try {
+        await client.delete(config.QDRANT_COLLECTION, {
+          points: ids.map(pointId),
+        });
+      } catch (error) {
+        if (!isMissingCollection(error)) throw error;
+      }
     },
     async deleteBySource(source) {
-      await client.delete(config.QDRANT_COLLECTION, {
-        filter: {
-          must: [{ key: "source", match: { value: source } }],
-        },
-      });
+      try {
+        await client.delete(config.QDRANT_COLLECTION, {
+          filter: {
+            must: [{ key: "source", match: { value: source } }],
+          },
+        });
+      } catch (error) {
+        if (!isMissingCollection(error)) throw error;
+      }
     },
     async countBySourceExcept(source, keepIds) {
-      const { count } = await client.count(config.QDRANT_COLLECTION, {
-        filter: staleFilter(source, keepIds),
-        exact: true,
-      });
-      return count;
+      try {
+        const { count } = await client.count(config.QDRANT_COLLECTION, {
+          filter: staleFilter(source, keepIds),
+          exact: true,
+        });
+        return count;
+      } catch (error) {
+        if (isMissingCollection(error)) return 0;
+        throw error;
+      }
     },
     async deleteBySourceExcept(source, keepIds) {
-      await client.delete(config.QDRANT_COLLECTION, {
-        filter: staleFilter(source, keepIds),
-      });
+      try {
+        await client.delete(config.QDRANT_COLLECTION, {
+          filter: staleFilter(source, keepIds),
+        });
+      } catch (error) {
+        if (!isMissingCollection(error)) throw error;
+      }
+    },
+    async dropCollection() {
+      await client.deleteCollection(config.QDRANT_COLLECTION);
+      // The next upsert recreates the collection at the dimension the current
+      // embedding model actually produces.
+      collectionReady = false;
     },
     async search(vector, limit, options) {
-      const result = await client.query(config.QDRANT_COLLECTION, {
-        query: vector,
-        limit,
-        with_payload: true,
-        ...(options?.source
-          ? {
-              filter: {
-                must: [{ key: "source", match: { value: options.source } }],
-              },
-            }
-          : {}),
-      });
-      return result.points.map((point) => ({
-        id: point.id,
-        score: point.score,
-        payload: point.payload,
-      }));
+      try {
+        const result = await client.query(config.QDRANT_COLLECTION, {
+          query: vector,
+          limit,
+          with_payload: true,
+          ...(options?.source
+            ? {
+                filter: {
+                  must: [{ key: "source", match: { value: options.source } }],
+                },
+              }
+            : {}),
+        });
+        return result.points.map((point) => ({
+          id: point.id,
+          score: point.score,
+          payload: point.payload,
+        }));
+      } catch (error) {
+        if (isMissingCollection(error)) return [];
+        throw error;
+      }
     },
   };
 }

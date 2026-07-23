@@ -52,6 +52,7 @@ jobs:
             -e OPENAI_API_URL=https://llm.invalid \
             -e OPENAI_API_KEY=sk-ci \
             -e OPENAI_MODEL=ci-model \
+            -e EMBEDDING_API_URL=https://embed.invalid \
             -e EMBEDDING_API_KEY=ci-embed \
             -e EMBEDDING_MODEL=ci-embed-model \
             retrieval-service:ci

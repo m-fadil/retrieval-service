@@ -87,7 +87,7 @@ export function createRagService(
 ): RagService {
   const llm = new OpenAI({
     apiKey: config.OPENAI_API_KEY,
-    baseURL: openAiBaseURL(config),
+    baseURL: openAiBaseURL(config.OPENAI_API_URL),
     maxRetries: config.LLM_MAX_RETRIES,
     timeout: config.LLM_TIMEOUT_MS,
   });

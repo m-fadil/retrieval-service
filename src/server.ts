@@ -8,7 +8,7 @@ import {
   createChatDispatcher,
   type ChatDispatcher,
 } from "./services/dispatch.js";
-import { createGeminiEmbedder, type Embedder } from "./services/embeddings.js";
+import { createOpenAiEmbedder, type Embedder } from "./services/embeddings.js";
 import { createFaqService, type FaqService } from "./services/faq.js";
 import { createFrappeClient } from "./services/frappe.js";
 import { createQdrantStore, type VectorStore } from "./services/qdrant.js";
@@ -25,7 +25,7 @@ export interface AppDeps {
 
 export function buildApp(deps: AppDeps = {}) {
   const config = deps.config ?? loadConfig();
-  const embedder = deps.embedder ?? createGeminiEmbedder(config);
+  const embedder = deps.embedder ?? createOpenAiEmbedder(config);
   const store = deps.store ?? createQdrantStore(config);
   const rag = deps.rag ?? createRagService(config, embedder, store);
   const faq = deps.faq ?? createFaqService(embedder, store);

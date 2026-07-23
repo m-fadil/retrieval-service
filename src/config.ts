@@ -29,6 +29,7 @@ const EnvSchema = z.object({
   OPENAI_API_URL: z.url(),
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL: z.string().min(1),
+  EMBEDDING_API_URL: z.url(),
   EMBEDDING_API_KEY: z.string().min(1),
   EMBEDDING_MODEL: z.string().min(1),
   LOG_CHAT_REQUEST_BODY: BooleanEnvSchema,
@@ -49,10 +50,12 @@ const EnvSchema = z.object({
 
 export type AppConfig = z.infer<typeof EnvSchema>;
 
-export function openAiBaseURL(
-  config: Pick<AppConfig, "OPENAI_API_URL">,
-): string {
-  const url = new URL(config.OPENAI_API_URL);
+/**
+ * Normalize an OpenAI-compatible base URL: a bare provider root defaults to
+ * /v1, an explicit path (e.g. a proxy prefix) is respected as-is.
+ */
+export function openAiBaseURL(rawUrl: string): string {
+  const url = new URL(rawUrl);
   if (url.pathname === "/") url.pathname = "/v1";
   return url.toString().replace(/\/$/, "");
 }

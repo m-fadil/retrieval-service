@@ -43,6 +43,8 @@ export interface FaqService {
   delete(id: string): Promise<{ deleted: number }>;
   bulk(input: FaqBulkRequest): Promise<FaqBulkResult>;
   reindex(input: FaqReindexRequest, log?: FaqLog): Promise<FaqReindexStart>;
+  /** Drops the whole collection, then reindexes. For embedding model changes. */
+  recreate(input: FaqReindexRequest, log?: FaqLog): Promise<FaqReindexStart>;
   reindexStatus(): Promise<FaqReindexStatus>;
 }
 
@@ -158,6 +160,20 @@ export function createFaqService(
     }
   }
 
+  function startReindex(
+    input: FaqReindexRequest,
+    log?: FaqLog,
+  ): FaqReindexStart {
+    reindexState = {
+      status: "processing",
+      started_at: new Date().toISOString(),
+      processed: 0,
+      total: input.items.length,
+    };
+    void runReindex(input, log);
+    return { status: "accepted" };
+  }
+
   return {
     upsert,
     delete: remove,
@@ -182,14 +198,16 @@ export function createFaqService(
     },
     async reindex(input, log) {
       if (reindexState.status === "processing") return { status: "processing" };
-      reindexState = {
-        status: "processing",
-        started_at: new Date().toISOString(),
-        processed: 0,
-        total: input.items.length,
-      };
-      void runReindex(input, log);
-      return { status: "accepted" };
+      return startReindex(input, log);
+    },
+    async recreate(input, log) {
+      if (reindexState.status === "processing") return { status: "processing" };
+      // The collection is dropped wholesale — every source, not just FAQ.
+      // This endpoint exists for embedding model/dimension changes, where all
+      // stored vectors are invalid; non-FAQ documents must be re-sent via
+      // POST /index afterwards.
+      await store.dropCollection();
+      return startReindex(input, log);
     },
     async reindexStatus() {
       return reindexState;

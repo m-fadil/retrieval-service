@@ -8,8 +8,8 @@ Rasional arsitektur dan model keamanannya ada di [DESIGN.md](DESIGN.md).
 
 ## Stack
 
-Node.js 22 · TypeScript · Fastify 5 · Zod 4 · `openai` (chat, OpenAI-compatible)
-· `@google/genai` (embedding) · `@qdrant/js-client-rest`.
+Node.js 22 · TypeScript · Fastify 5 · Zod 4 · `openai` (chat & embedding,
+OpenAI-compatible) · `@qdrant/js-client-rest`.
 
 Tidak ada dependency model lokal, tidak ada GPU.
 
@@ -64,21 +64,22 @@ Entry point hasil build ada di `dist/src/server.js` (karena `rootDir` di
 Semua endpoint **kecuali `/health`** mewajibkan
 `Authorization: Bearer $RETRIEVAL_API_KEY`.
 
-| Method | Path                  | Fungsi                                              |
-| ------ | --------------------- | --------------------------------------------------- |
-| GET    | `/health`             | Liveness + status Qdrant. Publik.                   |
-| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM              |
-| POST   | `/chat/async`         | Seperti `/chat`, tapi 202 + callback ke Frappe      |
-| POST   | `/answer`             | Retrieval + jawaban LLM                             |
-| POST   | `/query`              | Alias `/answer`, dipertahankan untuk kompatibilitas |
-| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source` |
-| POST   | `/index`              | Index dokumen generik                               |
-| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                             |
-| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                    |
-| GET    | `/faq/reindex/status` | Status reindex terakhir                             |
-| POST   | `/faq/generate`       | Susun draft FAQ dari transkrip percakapan           |
-| PUT    | `/faq/:id`            | Upsert satu FAQ                                     |
-| DELETE | `/faq/:id`            | Hapus satu FAQ                                      |
+| Method | Path                  | Fungsi                                               |
+| ------ | --------------------- | ---------------------------------------------------- |
+| GET    | `/health`             | Liveness + status Qdrant. Publik.                    |
+| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM               |
+| POST   | `/chat/async`         | Seperti `/chat`, tapi 202 + callback ke Frappe       |
+| POST   | `/answer`             | Retrieval + jawaban LLM                              |
+| POST   | `/query`              | Alias `/answer`, dipertahankan untuk kompatibilitas  |
+| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source`  |
+| POST   | `/index`              | Index dokumen generik                                |
+| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                              |
+| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                     |
+| POST   | `/faq/recreate`       | Drop collection (semua source) lalu reindex asinkron |
+| GET    | `/faq/reindex/status` | Status reindex terakhir                              |
+| POST   | `/faq/generate`       | Susun draft FAQ dari transkrip percakapan            |
+| PUT    | `/faq/:id`            | Upsert satu FAQ                                      |
+| DELETE | `/faq/:id`            | Hapus satu FAQ                                       |
 
 `/health` selalu mengembalikan 200 selama proses hidup; status Qdrant dibawa di
 body (`{"ok":true,"qdrant":false}`). Ini disengaja — dependency yang sedang down
@@ -111,15 +112,16 @@ kosong membuat proses gagal start, bukan gagal pada request pertama. Daftar
 lengkap beserta default ada di [`.env.example`](.env.example).
 
 Wajib: `QDRANT_URL`, `FRAPPE_URL`, `FRAPPE_AUTH_TOKEN`, `RETRIEVAL_API_KEY`,
-`OPENAI_API_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `EMBEDDING_API_KEY`,
-`EMBEDDING_MODEL`.
+`OPENAI_API_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `EMBEDDING_API_URL`,
+`EMBEDDING_API_KEY`, `EMBEDDING_MODEL`.
 
 Prioritas: `process.env` menang atas file `.env`.
 
 Catatan yang mudah terlewat:
 
-- `EMBEDDING_*` memakai **Gemini**, bukan endpoint OpenAI-compatible. Tidak ada
-  `EMBEDDING_API_URL`.
+- `EMBEDDING_*` memakai endpoint **OpenAI-compatible** (mis. OpenRouter,
+  `https://openrouter.ai/api/v1`) dan boleh berbeda dari `OPENAI_API_URL`. URL
+  tanpa path otomatis diberi akhiran `/v1`.
 - Mengganti `EMBEDDING_MODEL` ke model dengan dimensi berbeda akan ditolak saat
   upsert pertama dengan pesan eksplisit, bukan gagal diam-diam.
 - `LOG_CHAT_REQUEST_BODY=true` mencatat pertanyaan asli member. Jangan aktif di
@@ -203,7 +205,7 @@ src/
 │   ├── query.ts
 │   └── faq.ts
 └── services/
-    ├── embeddings.ts      # embedding Gemini
+    ├── embeddings.ts      # embedding OpenAI-compatible
     ├── qdrant.ts          # vector store, point ID deterministik
     ├── rag.ts             # orkestrasi: retrieval, planner, tool, komposisi
     ├── faq.ts             # siklus hidup FAQ + reindex

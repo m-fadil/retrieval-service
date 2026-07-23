@@ -31,6 +31,9 @@ export function apiRoutes(
     app.post("/chat/async", async (request, reply) => {
       const envelope = ChatAsyncEnvelopeSchema.parse(request.body);
       const input = ChatRequestSchema.parse(request.body);
+      if (config.LOG_CHAT_REQUEST_BODY) {
+        request.log.info({ stage: "chat.request", body: input });
+      }
       void dispatcher.dispatch(input, envelope, request.log);
       reply.code(202);
       return { accepted: true, request_id: envelope.request_id };
