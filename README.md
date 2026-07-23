@@ -68,6 +68,7 @@ Semua endpoint **kecuali `/health`** mewajibkan
 | ------ | --------------------- | --------------------------------------------------- |
 | GET    | `/health`             | Liveness + status Qdrant. Publik.                   |
 | POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM              |
+| POST   | `/chat/async`         | Seperti `/chat`, tapi 202 + callback ke Frappe      |
 | POST   | `/answer`             | Retrieval + jawaban LLM                             |
 | POST   | `/query`              | Alias `/answer`, dipertahankan untuk kompatibilitas |
 | POST   | `/search`             | Semantic search mentah, filter `min_score`+`source` |

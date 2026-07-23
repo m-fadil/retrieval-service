@@ -463,6 +463,75 @@ test("rag search scopes the vector query to the requested source", async () => {
   assert.equal(result.matches.length, 1);
 });
 
+test("chat async route accepts the job and hands off to the dispatcher", async () => {
+  const dispatched: Array<{
+    question: string;
+    actor?: string;
+    envelope: { request_id: string; session_id: string };
+  }> = [];
+  const app = buildApp({
+    config,
+    store,
+    rag,
+    faq,
+    dispatcher: {
+      async dispatch(input, envelope) {
+        dispatched.push({
+          question: input.question,
+          actor: input.actor,
+          envelope,
+        });
+      },
+    },
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/chat/async",
+    headers: authHeaders,
+    payload: {
+      message: "How do I check in?",
+      type: "staff",
+      staff_id: "STAFF-1",
+      job_id: "JOB-1",
+      actor: "trainer@example.com",
+      request_id: "req-1",
+      session_id: "CHAT-1",
+    },
+  });
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(response.json(), { accepted: true, request_id: "req-1" });
+  assert.deepEqual(dispatched, [
+    {
+      question: "How do I check in?",
+      actor: "trainer@example.com",
+      envelope: { request_id: "req-1", session_id: "CHAT-1" },
+    },
+  ]);
+});
+
+test("chat async route rejects a missing correlation envelope", async () => {
+  let dispatched = 0;
+  const app = buildApp({
+    config,
+    store,
+    rag,
+    faq,
+    dispatcher: {
+      async dispatch() {
+        dispatched += 1;
+      },
+    },
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/chat/async",
+    headers: authHeaders,
+    payload: { message: "hi", session_id: "CHAT-1" },
+  });
+  assert.ok(response.statusCode >= 400);
+  assert.equal(dispatched, 0);
+});
+
 test("answer route validates and answers", async () => {
   const app = buildApp({ config, store, rag, faq });
   const response = await app.inject({

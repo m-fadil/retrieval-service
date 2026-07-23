@@ -73,6 +73,17 @@ export const ChatRequestSchema = z
       ...(input.actor ? { actor: input.actor } : {}),
     };
   });
+/**
+ * Correlation envelope for /chat/async. Parsed alongside ChatRequestSchema
+ * (which strips these unknown keys) rather than folded into its transform.
+ * Echoed back verbatim in the Frappe callback so the caller can match the
+ * answer to the dispatch that asked the question.
+ */
+export const ChatAsyncEnvelopeSchema = z.object({
+  request_id: z.string().trim().min(1),
+  session_id: z.string().trim().min(1),
+});
+
 export const QueryRequestSchema = AnswerRequestSchema;
 
 export type IndexRequest = z.infer<typeof IndexRequestSchema>;
@@ -87,4 +98,5 @@ export type ChatResponse<Source = unknown> = {
   tools_used?: string[];
   sources: Source[];
 };
+export type ChatAsyncEnvelope = z.infer<typeof ChatAsyncEnvelopeSchema>;
 export type QueryRequest = z.infer<typeof QueryRequestSchema>;

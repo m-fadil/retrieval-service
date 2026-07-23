@@ -4,8 +4,13 @@ import { apiKeyGuard, rateLimiter } from "./routes/auth.js";
 import { healthRoutes } from "./routes/health.js";
 import { apiRoutes } from "./routes/index.js";
 import { faqRoutes } from "./routes/faq.js";
+import {
+  createChatDispatcher,
+  type ChatDispatcher,
+} from "./services/dispatch.js";
 import { createGeminiEmbedder, type Embedder } from "./services/embeddings.js";
 import { createFaqService, type FaqService } from "./services/faq.js";
+import { createFrappeClient } from "./services/frappe.js";
 import { createQdrantStore, type VectorStore } from "./services/qdrant.js";
 import { createRagService, type RagService } from "./services/rag.js";
 
@@ -15,6 +20,7 @@ export interface AppDeps {
   store?: VectorStore;
   rag?: RagService;
   faq?: FaqService;
+  dispatcher?: ChatDispatcher;
 }
 
 export function buildApp(deps: AppDeps = {}) {
@@ -23,6 +29,8 @@ export function buildApp(deps: AppDeps = {}) {
   const store = deps.store ?? createQdrantStore(config);
   const rag = deps.rag ?? createRagService(config, embedder, store);
   const faq = deps.faq ?? createFaqService(embedder, store);
+  const dispatcher =
+    deps.dispatcher ?? createChatDispatcher(rag, createFrappeClient(config));
   const app = Fastify({
     bodyLimit: config.MAX_BODY_BYTES,
     logger: {
@@ -60,7 +68,7 @@ export function buildApp(deps: AppDeps = {}) {
   );
 
   app.register(healthRoutes(store));
-  app.register(apiRoutes(config, rag));
+  app.register(apiRoutes(config, rag, dispatcher));
   app.register(faqRoutes(faq, rag));
 
   return app;

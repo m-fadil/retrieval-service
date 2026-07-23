@@ -2,16 +2,19 @@ import type { FastifyPluginAsync } from "fastify";
 import type { AppConfig } from "../config.js";
 import {
   AnswerRequestSchema,
+  ChatAsyncEnvelopeSchema,
   ChatRequestSchema,
   IndexRequestSchema,
   QueryRequestSchema,
   SearchRequestSchema,
 } from "../schemas/query.js";
+import type { ChatDispatcher } from "../services/dispatch.js";
 import type { RagService } from "../services/rag.js";
 
 export function apiRoutes(
   config: Pick<AppConfig, "LOG_CHAT_REQUEST_BODY">,
   rag: RagService,
+  dispatcher: ChatDispatcher,
 ): FastifyPluginAsync {
   return async (app) => {
     app.post("/index", async (request) =>
@@ -23,6 +26,15 @@ export function apiRoutes(
     app.post("/answer", async (request) =>
       rag.answer(AnswerRequestSchema.parse(request.body), request.log),
     );
+    // Accepts the job and returns immediately; the answer is delivered to
+    // Frappe by the dispatcher, so no caller-side worker waits out the LLM.
+    app.post("/chat/async", async (request, reply) => {
+      const envelope = ChatAsyncEnvelopeSchema.parse(request.body);
+      const input = ChatRequestSchema.parse(request.body);
+      void dispatcher.dispatch(input, envelope, request.log);
+      reply.code(202);
+      return { accepted: true, request_id: envelope.request_id };
+    });
     app.post("/chat", async (request) => {
       const start = performance.now();
       try {
