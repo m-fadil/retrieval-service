@@ -406,6 +406,63 @@ test("search route accepts explicit lower min_score", async () => {
   });
 });
 
+test("search route forwards source to the service", async () => {
+  let received: string | undefined;
+  const app = buildApp({
+    config,
+    store,
+    faq,
+    rag: {
+      ...rag,
+      async search(input) {
+        received = input.source;
+        return { matches: [] };
+      },
+    },
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/search",
+    headers: authHeaders,
+    payload: { question: "hello", source: "frappe_faq" },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.equal(received, "frappe_faq");
+});
+
+test("rag search scopes the vector query to the requested source", async () => {
+  const optionsSeen: Array<{ source?: string } | undefined> = [];
+  const scopedStore: VectorStore = {
+    ...store,
+    async search(_vector, _limit, options) {
+      optionsSeen.push(options);
+      return [
+        {
+          id: "faq-1",
+          score: 0.9,
+          payload: { text: "faq", source: "frappe_faq" },
+        },
+      ];
+    },
+  };
+  const service = createRagService(config, embedder, scopedStore, {
+    async listTools() {
+      return [];
+    },
+    async callTool() {
+      throw new Error("not used");
+    },
+  });
+  const result = await service.search({
+    question: "q",
+    limit: 3,
+    min_score: 0.7,
+    source: "frappe_faq",
+  });
+  assert.deepEqual(optionsSeen, [{ source: "frappe_faq" }]);
+  assert.equal(result.matches.length, 1);
+});
+
 test("answer route validates and answers", async () => {
   const app = buildApp({ config, store, rag, faq });
   const response = await app.inject({
@@ -1099,12 +1156,6 @@ test("chat does not return raw environment context when it is the only source", 
             text: '{"day_name":"Thursday","timezone":"Asia/Singapore"}',
             source: "mcp",
             tool: "get_environment_context",
-            result: {
-              structuredContent: {
-                day_name: "Thursday",
-                timezone: "Asia/Singapore",
-              },
-            },
           },
         },
       ],

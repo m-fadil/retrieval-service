@@ -48,6 +48,10 @@ export function apiKeyGuard(apiKey: string) {
  * Deliberately dependency-free and in-process: it is a cost guard in front of
  * paid LLM/embedding calls, not a distributed quota. With more than one replica
  * the effective limit is RATE_LIMIT_MAX per replica.
+ *
+ * All Frappe traffic arrives from the Frappe server's address, so every chat
+ * user shares that one bucket: size RATE_LIMIT_MAX for aggregate chat load,
+ * not per-user rates.
  */
 export function rateLimiter(options: { max: number; windowMs: number }) {
   const hits = new Map<string, { count: number; resetAt: number }>();

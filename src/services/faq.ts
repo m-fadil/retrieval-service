@@ -33,11 +33,16 @@ export type FaqReindexStatus =
       error: string;
     };
 
+/** Just enough of a logger for the fire-and-forget reindex to report failure. */
+export type FaqLog = {
+  error: (details: Record<string, unknown>, message?: string) => void;
+};
+
 export interface FaqService {
   upsert(id: string, faq: Faq): Promise<FaqWriteResult>;
   delete(id: string): Promise<{ deleted: number }>;
   bulk(input: FaqBulkRequest): Promise<FaqBulkResult>;
-  reindex(input: FaqReindexRequest): Promise<FaqReindexStart>;
+  reindex(input: FaqReindexRequest, log?: FaqLog): Promise<FaqReindexStart>;
   reindexStatus(): Promise<FaqReindexStatus>;
 }
 
@@ -104,7 +109,7 @@ export function createFaqService(
     return { deleted: 1 };
   }
 
-  async function runReindex(input: FaqReindexRequest) {
+  async function runReindex(input: FaqReindexRequest, log?: FaqLog) {
     if (reindexState.status !== "processing") return;
     const started = reindexState;
     const total: FaqBulkResult = {
@@ -139,6 +144,9 @@ export function createFaqService(
         total: input.items.length,
       };
     } catch (error) {
+      // Also logged: the state below is only visible to whoever happens to
+      // poll /faq/reindex/status.
+      log?.error({ err: error }, "faq reindex failed");
       reindexState = {
         status: "failed",
         started_at: started.started_at,
@@ -172,7 +180,7 @@ export function createFaqService(
       }
       return total;
     },
-    async reindex(input) {
+    async reindex(input, log) {
       if (reindexState.status === "processing") return { status: "processing" };
       reindexState = {
         status: "processing",
@@ -180,7 +188,7 @@ export function createFaqService(
         processed: 0,
         total: input.items.length,
       };
-      void runReindex(input);
+      void runReindex(input, log);
       return { status: "accepted" };
     },
     async reindexStatus() {

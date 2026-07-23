@@ -81,20 +81,20 @@ memanggil embedding, sehingga sinkronisasi berulang tidak berbiaya token.
 **Endpoint yang benar-benar ada.** Semua kecuali `/health` mewajibkan
 `Authorization: Bearer $RETRIEVAL_API_KEY`.
 
-| Method | Path                  | Fungsi                                       |
-| ------ | --------------------- | -------------------------------------------- |
-| GET    | `/health`             | Liveness + status Qdrant. Publik.            |
-| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM       |
-| POST   | `/answer`             | Retrieval + jawaban LLM                      |
-| POST   | `/query`              | Alias `/answer` (kompatibilitas)             |
-| POST   | `/search`             | Semantic search mentah, difilter `min_score` |
-| POST   | `/index`              | Index dokumen generik                        |
-| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                      |
-| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif             |
-| GET    | `/faq/reindex/status` | Status reindex terakhir                      |
-| POST   | `/faq/generate`       | Draft FAQ dari transkrip                     |
-| PUT    | `/faq/:id`            | Upsert satu FAQ                              |
-| DELETE | `/faq/:id`            | Hapus satu FAQ                               |
+| Method | Path                  | Fungsi                                              |
+| ------ | --------------------- | --------------------------------------------------- |
+| GET    | `/health`             | Liveness + status Qdrant. Publik.                   |
+| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM              |
+| POST   | `/answer`             | Retrieval + jawaban LLM                             |
+| POST   | `/query`              | Alias `/answer` (kompatibilitas)                    |
+| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source` |
+| POST   | `/index`              | Index dokumen generik                               |
+| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                             |
+| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                    |
+| GET    | `/faq/reindex/status` | Status reindex terakhir                             |
+| POST   | `/faq/generate`       | Draft FAQ dari transkrip                            |
+| PUT    | `/faq/:id`            | Upsert satu FAQ                                     |
+| DELETE | `/faq/:id`            | Hapus satu FAQ                                      |
 
 Tidak ada prefix `/v1` dan tidak ada `/ready` — `/health` merangkap keduanya.
 `/health` mengembalikan 200 selama proses hidup, dengan status dependency di
@@ -392,10 +392,21 @@ metadata }] }`.
 `POST /search` — dedup dan retrieval mentah:
 
 ```json
-{ "question": "Bagaimana cara apply job?", "limit": 5, "min_score": 0.7 }
+{
+  "question": "Bagaimana cara apply job?",
+  "limit": 5,
+  "min_score": 0.7,
+  "source": "frappe_faq"
+}
 ```
 
-Internal: `question -> Gemini embedding -> Qdrant search -> filter min_score`.
+`source` opsional dan membatasi hasil ke satu payload `source`. Collection
+dipakai bersama dokumen `/index`, jadi pemanggil yang FAQ-oriented (dedup dan
+tool MCP `faq_search`) harus mengirim `"source": "frappe_faq"` — tanpa itu
+dokumen non-FAQ bisa muncul sebagai match tanpa question/answer.
+
+Internal: `question -> Gemini embedding -> Qdrant search (filter source) ->
+filter min_score`.
 
 `POST /chat` menjalankan alur lengkap di §3.
 

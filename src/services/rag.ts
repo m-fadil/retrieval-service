@@ -194,7 +194,11 @@ Question: ${question}`,
   }
 
   async function search(input: SearchRequest) {
-    const sources = await retrieve(input.question, input.limit);
+    const sources = await retrieve(
+      input.question,
+      input.limit,
+      input.source ? { source: input.source } : undefined,
+    );
     return { matches: filterMatches(sources, input.min_score) };
   }
 
@@ -439,10 +443,12 @@ Question: ${question}`,
         status: "completed",
         ms: Math.round(performance.now() - start),
       });
+      // Only the extracted text travels onward: the raw MCP result would be
+      // echoed back to the caller in `sources` for no consumer.
       return [
         {
           id: plan.name,
-          payload: { text, source: "mcp", tool: plan.name, result },
+          payload: { text, source: "mcp", tool: plan.name },
         },
       ];
     } catch (error) {

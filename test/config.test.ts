@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig, openAiBaseURL } from "../src/config.js";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig, openAiBaseURL, readDotEnv } from "../src/config.js";
 
 test("loadConfig validates and defaults env", () => {
   const config = loadConfig(
@@ -66,6 +69,28 @@ test("loadConfig rejects invalid LOG_LEVEL", () => {
 
 test("loadConfig rejects missing provider env", () => {
   assert.throws(() => loadConfig({ QDRANT_URL: "http://qdrant:6333" }, {}));
+});
+
+test("readDotEnv strips matching surrounding quotes from values", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "dotenv-")), ".env");
+  writeFileSync(
+    path,
+    [
+      'DOUBLE="secret-key"',
+      "SINGLE='another'",
+      "BARE=plain",
+      'UNMATCHED="half',
+      'EMBEDDED=ab"cd"ef',
+    ].join("\n"),
+  );
+
+  assert.deepEqual(readDotEnv(path), {
+    DOUBLE: "secret-key",
+    SINGLE: "another",
+    BARE: "plain",
+    UNMATCHED: '"half',
+    EMBEDDED: 'ab"cd"ef',
+  });
 });
 
 test("openAiBaseURL defaults bare provider root to v1", () => {

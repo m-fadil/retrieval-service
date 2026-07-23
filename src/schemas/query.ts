@@ -20,6 +20,11 @@ export const AnswerRequestSchema = z.object({
 
 export const SearchRequestSchema = AnswerRequestSchema.extend({
   min_score: z.number().min(0).max(1).default(0.7),
+  // Restricts matches to one payload `source` (e.g. "frappe_faq"). The
+  // collection is shared with /index documents, so FAQ-oriented callers —
+  // dedup and the faq_search MCP tool — must scope their searches or non-FAQ
+  // points surface as matches with no question/answer.
+  source: z.string().min(1).optional(),
 });
 
 export const ChatRequestSchema = z

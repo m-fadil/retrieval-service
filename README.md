@@ -70,7 +70,7 @@ Semua endpoint **kecuali `/health`** mewajibkan
 | POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM              |
 | POST   | `/answer`             | Retrieval + jawaban LLM                             |
 | POST   | `/query`              | Alias `/answer`, dipertahankan untuk kompatibilitas |
-| POST   | `/search`             | Semantic search mentah, difilter `min_score`        |
+| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source` |
 | POST   | `/index`              | Index dokumen generik                               |
 | POST   | `/faq/bulk`           | Batch upsert/delete FAQ                             |
 | POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                    |

@@ -18,7 +18,7 @@ export function faqRoutes(
       faq.bulk(FaqBulkRequestSchema.parse(request.body)),
     );
     app.post("/faq/reindex", async (request) =>
-      faq.reindex(FaqReindexRequestSchema.parse(request.body)),
+      faq.reindex(FaqReindexRequestSchema.parse(request.body), request.log),
     );
     app.get("/faq/reindex/status", async () => faq.reindexStatus());
 

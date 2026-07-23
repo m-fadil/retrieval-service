@@ -66,11 +66,22 @@ export function createQdrantStore(
   async function ensureCollection(vectorSize: number) {
     if (collectionReady) return;
     const { exists } = await client.collectionExists(config.QDRANT_COLLECTION);
+    let created = false;
     if (!exists) {
-      await client.createCollection(config.QDRANT_COLLECTION, {
-        vectors: { size: vectorSize, distance: "Cosine" },
-      });
-    } else {
+      try {
+        await client.createCollection(config.QDRANT_COLLECTION, {
+          vectors: { size: vectorSize, distance: "Cosine" },
+        });
+        created = true;
+      } catch (error) {
+        // A concurrent writer may have created it between the existence check
+        // and this call; only that race is tolerated — fall through to the
+        // dimension check below, which also validates the racing creation.
+        const raced = await client.collectionExists(config.QDRANT_COLLECTION);
+        if (!raced.exists) throw error;
+      }
+    }
+    if (!created) {
       // A dimension change (e.g. a different embedding model) would otherwise
       // surface as opaque upsert failures much later.
       const info = await client.getCollection(config.QDRANT_COLLECTION);

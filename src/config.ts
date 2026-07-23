@@ -68,9 +68,12 @@ export function readDotEnv(
         .filter((line) => line && !line.startsWith("#"))
         .map((line) => {
           const index = line.indexOf("=");
-          return index === -1
-            ? [line, ""]
-            : [line.slice(0, index), line.slice(index + 1)];
+          if (index === -1) return [line, ""];
+          // Tolerate the common KEY="value" / KEY='value' convention; a
+          // quoted API key would otherwise fail auth with the quotes baked in.
+          const raw = line.slice(index + 1).trim();
+          const value = /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
+          return [line.slice(0, index), value];
         }),
     );
   } catch (error) {
