@@ -155,9 +155,27 @@ pertanyaan mandiri. `type` memilih katalog tool (`staff` / `manager`) tetapi
       "score": 0.82,
       "payload": { "text": "…", "source": "frappe_faq", "question": "…" }
     }
-  ]
+  ],
+  "usage": {
+    "model": "…",
+    "llm_calls": 3,
+    "prompt_tokens": 1240,
+    "completion_tokens": 180,
+    "total_tokens": 1420
+  },
+  "duration_ms": 4210
 }
 ```
+
+`usage` menjumlahkan `usage` yang dilaporkan provider dari **semua** LLM call
+yang selesai dalam satu chat (condense, tool selection, replay, planner,
+compose) — angka billing provider, bukan estimasi; token embedding tidak
+termasuk. Call yang backend-nya tidak melaporkan usage tetap menaikkan
+`llm_calls` tetapi menyumbang 0 token. `duration_ms` adalah waktu proses
+wall-clock. Keduanya juga dikirim di payload callback `/chat/async` (usage
+absen bila chat gagal sebelum ada call yang selesai) dan dicatat Frappe di
+doctype **Chat AI Audit Log**. Log per stage tetap ada; baris ringkasan
+`chat.usage_total` merangkumnya per request.
 
 ### 4.2 Qdrant
 

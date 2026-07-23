@@ -101,6 +101,21 @@ export type AnswerRequest = z.infer<typeof AnswerRequestSchema>;
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 export type ChatHistoryMessage = z.infer<typeof ChatHistoryMessageSchema>;
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
+/**
+ * LLM spend for one chat, summed across every completed completion call
+ * (condense, tool selection, replay, planner, compose). Token counts come from
+ * the provider's own `usage` field — the billing numbers, not an estimate —
+ * and stay zero for calls whose backend does not report usage. Embedding
+ * tokens are not included.
+ */
+export type ChatUsage = {
+  model: string;
+  llm_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
 export type ChatResponse<Source = unknown> = {
   answer: string;
   route?: "faq" | "fallback" | "mcp" | "hybrid";
@@ -108,6 +123,8 @@ export type ChatResponse<Source = unknown> = {
   reason: string;
   tools_used?: string[];
   sources: Source[];
+  usage?: ChatUsage;
+  duration_ms?: number;
 };
 export type ChatAsyncEnvelope = z.infer<typeof ChatAsyncEnvelopeSchema>;
 export type QueryRequest = z.infer<typeof QueryRequestSchema>;

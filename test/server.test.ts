@@ -316,6 +316,20 @@ const plannerCall = (name: string, arguments_: Record<string, unknown>) => ({
 
 const finalAnswer = (content: string) => ({ role: "assistant", content });
 
+/**
+ * Chat responses always append per-request accounting (usage, duration_ms).
+ * Tests that assert the answer contract strip it here; the accounting fields
+ * themselves are covered by the dedicated usage test.
+ */
+function withoutAccounting(body: object) {
+  const {
+    usage: _usage,
+    duration_ms: _duration,
+    ...rest
+  } = body as Record<string, unknown>;
+  return rest;
+}
+
 const nativeToolCall = (
   name: string,
   arguments_: Record<string, unknown>,
@@ -681,7 +695,7 @@ test("chat route uses faq_search for general FAQ even with job_id and staff_id",
     });
     assert.equal(response.statusCode, 200);
     assert.equal(JSON.stringify(requests[0]).includes("tool_choice"), false);
-    assert.deepEqual(response.json(), {
+    assert.deepEqual(withoutAccounting(response.json()), {
       answer: "Alpha Fitness is a wellness club.",
       route: "faq",
       needs_admin: false,
@@ -739,7 +753,7 @@ test("chat route keeps FAQ answer when MCP tool discovery fails", async () => {
       payload: { message: "What is Alpha Fitness", job_id: "JOB-1" },
     });
     assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), {
+    assert.deepEqual(withoutAccounting(response.json()), {
       answer: "Alpha Fitness is a wellness club.",
       route: "faq",
       needs_admin: false,
@@ -800,10 +814,17 @@ async function withCondenseChat<T>(
     if ("status" in message && typeof message.status === "number") {
       return new Response("boom", { status: message.status });
     }
-    return new Response(JSON.stringify({ choices: [{ message }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        choices: [{ message }],
+        // Fixed per-call usage so the aggregation test can predict totals.
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
   }) satisfies typeof fetch;
   try {
     const service = createRagService(config, recorder, chatStore, {
@@ -855,6 +876,40 @@ test("chat rewrites follow-ups from history before retrieval", async () => {
       // …and retrieval embedded the standalone question, not "Yes".
       assert.deepEqual(embedded, ["What sandwich types can you suggest?"]);
       assert.equal(response.json().answer, "Try the club sandwich.");
+    },
+  );
+});
+
+test("chat reports token usage summed across LLM calls and its duration", async () => {
+  await withCondenseChat(
+    [
+      finalAnswer("What sandwich types can you suggest?"),
+      finalAnswer("no tools needed"),
+    ],
+    async ({ app }) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/chat",
+        headers: authHeaders,
+        payload: {
+          message: "Yes",
+          history: [{ role: "user", content: "Any sandwich ideas?" }],
+        },
+      });
+      assert.equal(response.statusCode, 200);
+      const body = response.json() as {
+        usage: Record<string, unknown>;
+        duration_ms: unknown;
+      };
+      // Condense + planner: two calls at 10/5/15 each.
+      assert.deepEqual(body.usage, {
+        model: "large",
+        llm_calls: 2,
+        prompt_tokens: 20,
+        completion_tokens: 10,
+        total_tokens: 30,
+      });
+      assert.equal(typeof body.duration_ms, "number");
     },
   );
 });
@@ -1364,14 +1419,16 @@ test("chat does not return raw environment context when it is the only source", 
       `natural:${question}:${String(sources[0]?.payload?.text ?? "")}`,
   );
   assert.deepEqual(
-    await service.chat({
-      type: "staff",
-      question: "How do I cancel cover request",
-      limit: 3,
-      min_score: 0.7,
-      job_id: "JOB-1",
-      staff_id: "STAFF-1",
-    }),
+    withoutAccounting(
+      await service.chat({
+        type: "staff",
+        question: "How do I cancel cover request",
+        limit: 3,
+        min_score: 0.7,
+        job_id: "JOB-1",
+        staff_id: "STAFF-1",
+      }),
+    ),
     {
       answer:
         "Your question is being forwarded to the admin. Please wait a moment.",
@@ -1437,14 +1494,16 @@ test("chat planner ignores reasoning content in OpenAI-compatible responses", as
       },
     });
     assert.deepEqual(
-      await service.chat({
-        type: "staff",
-        question: "What is Alpha Fitness",
-        limit: 3,
-        min_score: 0.7,
-        job_id: "JOB-1",
-        staff_id: "STAFF-1",
-      }),
+      withoutAccounting(
+        await service.chat({
+          type: "staff",
+          question: "What is Alpha Fitness",
+          limit: 3,
+          min_score: 0.7,
+          job_id: "JOB-1",
+          staff_id: "STAFF-1",
+        }),
+      ),
       {
         answer: "Alpha Fitness is a wellness club.",
         route: "faq",
@@ -1570,12 +1629,14 @@ test("chat service returns fallback when faq_search has no min_score match", asy
     },
   });
   assert.deepEqual(
-    await service.chat({
-      type: "staff",
-      question: "hello",
-      limit: 5,
-      min_score: 0.7,
-    }),
+    withoutAccounting(
+      await service.chat({
+        type: "staff",
+        question: "hello",
+        limit: 5,
+        min_score: 0.7,
+      }),
+    ),
     {
       answer:
         "Your question is being forwarded to the admin. Please wait a moment.",

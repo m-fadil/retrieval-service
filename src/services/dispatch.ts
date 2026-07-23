@@ -67,6 +67,9 @@ export function createChatDispatcher(
 
   return {
     async dispatch(input, envelope, log) {
+      // Measured here rather than taken from the chat response so a failed
+      // chat still reports how long it burned before escalating.
+      const started = performance.now();
       let response: ChatResponse<SearchHit>;
       try {
         response = await rag.chat(input, log);
@@ -102,6 +105,10 @@ export function createChatDispatcher(
           sources: (response.sources ?? []).map((source) => ({
             id: source.id,
           })),
+          // Cost accounting for the audit log; absent when chat failed
+          // before any LLM call completed.
+          ...(response.usage ? { usage: response.usage } : {}),
+          duration_ms: Math.round(performance.now() - started),
         },
         log,
       );

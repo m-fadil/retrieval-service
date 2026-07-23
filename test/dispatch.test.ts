@@ -47,7 +47,9 @@ test("dispatch delivers the chat result to the Frappe callback", async () => {
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.method, CHAT_CALLBACK_METHOD);
-  assert.deepEqual(calls[0]!.body, {
+  const { duration_ms, ...body } = calls[0]!.body as Record<string, unknown>;
+  assert.equal(typeof duration_ms, "number");
+  assert.deepEqual(body, {
     session_id: "CHAT-1",
     request_id: "req-1",
     question: "How do I check in?",
@@ -59,6 +61,35 @@ test("dispatch delivers the chat result to the Frappe callback", async () => {
     // Ids only — the FAQ text must not travel back.
     sources: [{ id: "FAQ-1" }],
   });
+});
+
+test("dispatch forwards token usage to the callback", async () => {
+  const calls: Array<{ body: Record<string, unknown> }> = [];
+  const usage = {
+    model: "large",
+    llm_calls: 2,
+    prompt_tokens: 20,
+    completion_tokens: 10,
+    total_tokens: 30,
+  };
+  const dispatcher = createChatDispatcher(
+    {
+      async chat() {
+        return { ...chatResponse, usage };
+      },
+    },
+    {
+      async call<T>(_method: string, body?: unknown) {
+        calls.push({ body: body as Record<string, unknown> });
+        return {} as T;
+      },
+    },
+    [],
+  );
+
+  await dispatcher.dispatch(input, envelope);
+
+  assert.deepEqual(calls[0]!.body.usage, usage);
 });
 
 test("dispatch escalates through the callback when chat fails", async () => {
@@ -84,6 +115,9 @@ test("dispatch escalates through the callback when chat fails", async () => {
   assert.equal(calls[0]!.body.needs_admin, true);
   assert.equal(calls[0]!.body.reason, "chat_failed");
   assert.equal(calls[0]!.body.request_id, "req-1");
+  // Even a failed chat reports how long it burned; there is no usage to send.
+  assert.equal(typeof calls[0]!.body.duration_ms, "number");
+  assert.ok(!("usage" in calls[0]!.body));
 });
 
 test("dispatch retries callback delivery until it succeeds", async () => {
