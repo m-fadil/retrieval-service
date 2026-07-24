@@ -2,12 +2,12 @@
 
 # Dependencies are installed once and shared by the build and runtime stages so
 # a source-only change does not re-run npm ci.
-FROM node:22-slim AS deps
+FROM node:26-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 
-FROM node:22-slim AS build
+FROM node:26-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json tsconfig.json ./
@@ -19,12 +19,12 @@ COPY test ./test
 RUN npm run build
 
 # Production dependency tree, resolved from the same lockfile.
-FROM node:22-slim AS prod-deps
+FROM node:26-slim AS prod-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
 
-FROM node:22-slim AS runtime
+FROM node:26-slim AS runtime
 ENV NODE_ENV=production \
     PORT=3000 \
     HOST=0.0.0.0
