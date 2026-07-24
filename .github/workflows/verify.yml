@@ -68,13 +68,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Built and loaded, never pushed: publishing is release.yml's job. amd64
       # only here, because the smoke test below has to actually run the image.
       # The gha cache it writes is what release.yml's multi-arch build reads.
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: runtime
