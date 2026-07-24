@@ -1,0 +1,141 @@
+# Reusable checks. Called by ci.yml on every PR and by release.yml before any
+# image is published, so a pushed tag can never skip what a PR had to pass.
+name: Verify
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+
+  test:
+    name: Test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is what the runtime image ships; 24 is the current Node release
+        # line, so a break there is caught before the base image moves.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Typecheck and tests are separate steps so a red run says which failed.
+      - name: Typecheck
+        run: npm run build
+      - name: Test
+        run: npm test
+
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Production tree only: a dev-only advisory should not block a release of
+      # an image that does not contain the package.
+      - run: npm audit --omit=dev --audit-level=high
+
+  # Lives here rather than in ci.yml so the release path is covered too: nothing
+  # reaches GHCR without having been proven to boot first.
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
+
+      # Built and loaded, never pushed: publishing is release.yml's job. amd64
+      # only here, because the smoke test below has to actually run the image.
+      # The gha cache it writes is what release.yml's multi-arch build reads.
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          load: true
+          tags: retrieval-service:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Proves the image boots and that config.ts accepts a real environment.
+      # The credentials are deliberately fake: /health is the only unauthed
+      # route and it touches nothing but Qdrant, which is expected to be absent.
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 3000:3000 \
+            -e QDRANT_URL=http://qdrant.invalid:6333 \
+            -e FRAPPE_URL=http://frappe.invalid:8000 \
+            -e FRAPPE_AUTH_TOKEN='token ci:ci' \
+            -e RETRIEVAL_API_KEY=ci-smoke-key \
+            -e OPENAI_API_URL=https://llm.invalid \
+            -e OPENAI_API_KEY=sk-ci \
+            -e OPENAI_MODEL=ci-model \
+            -e EMBEDDING_API_URL=https://embed.invalid \
+            -e EMBEDDING_API_KEY=ci-embed \
+            -e EMBEDDING_MODEL=ci-embed-model \
+            retrieval-service:ci
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
+              echo "health ok after ${i}s"
+              curl -fsS http://127.0.0.1:3000/health
+              break
+            fi
+            if [ "$i" = 30 ]; then
+              echo "service did not become healthy" >&2
+              docker logs smoke >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # The guard must hold in the built image, not just in test/security.test.ts.
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' -d '{"question":"hi"}' \
+            http://127.0.0.1:3000/chat)
+          if [ "$status" != "401" ]; then
+            echo "expected 401 from unauthenticated /chat, got $status" >&2
+            docker logs smoke >&2
+            exit 1
+          fi
+          echo "unauthenticated /chat correctly rejected"
+
+          # Graceful shutdown: SIGTERM must exit well before the 10s kill timeout.
+          start=$(date +%s)
+          docker stop smoke >/dev/null
+          elapsed=$(( $(date +%s) - start ))
+          echo "stopped in ${elapsed}s"
+          if [ "$elapsed" -ge 10 ]; then
+            echo "container ignored SIGTERM and was killed" >&2
+            exit 1
+          fi
+
+      - name: Container logs
+        if: failure()
+        run: docker logs smoke || true
