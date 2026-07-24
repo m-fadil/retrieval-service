@@ -23,3 +23,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # A base-image major changes the deployed runtime and must move together
+      # with engines and the CI matrix, which an isolated PR cannot do. node 24
+      # and 26 also break @qdrant/js-client-rest (undici 7 vs the undici 6 agent
+      # it pins), so bump node by hand once qdrant-js supports undici 7. Patch
+      # and minor (security) still flow automatically.
+      - dependency-name: node
+        update-types: [version-update:semver-major]
