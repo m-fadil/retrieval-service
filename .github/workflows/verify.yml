@@ -29,9 +29,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 22 is what the runtime image ships; 24 is the current Node release
-        # line, so a break there is caught before the base image moves.
-        node: [22, 24]
+        # 22 is the engines floor; 26 is what the runtime image ships, so a
+        # break on the version actually deployed is caught here.
+        node: [22, 26]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
