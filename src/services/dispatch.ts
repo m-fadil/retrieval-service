@@ -85,6 +85,8 @@ export function createChatDispatcher(
           route: "fallback",
           needs_admin: true,
           reason: "chat_failed",
+          // The failure message, forwarded so Frappe records it on the audit row.
+          error: error instanceof Error ? error.message : String(error),
           tools_used: [],
           sources: [],
           // The LLM calls that completed before the failure were still
@@ -104,6 +106,8 @@ export function createChatDispatcher(
           route: response.route,
           reason: response.reason,
           needs_admin: response.needs_admin,
+          // Only present on failures; lets Frappe record why the chat errored.
+          ...(response.error ? { error: response.error } : {}),
           tools_used: response.tools_used ?? [],
           // Ids only: the payloads carry FAQ text and tool output the
           // callback has no use for.

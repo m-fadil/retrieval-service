@@ -139,6 +139,8 @@ export type ChatResponse<Source = unknown> = {
   reason: string;
   tools_used?: string[];
   sources: Source[];
+  // Failure detail on a chat error, forwarded so Frappe records it on the audit row.
+  error?: string;
   usage?: ChatUsage;
   duration_ms?: number;
 };
