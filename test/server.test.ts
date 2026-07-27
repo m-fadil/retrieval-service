@@ -36,6 +36,7 @@ const config: AppConfig = {
   // High enough that the shared app fixture is never rate limited mid-suite.
   RATE_LIMIT_MAX: 100_000,
   RATE_LIMIT_WINDOW_MS: 60_000,
+  ASSISTANT_SCOPE: "staff and manager questions about jobs and schedules",
 };
 
 /** Every route except /health now requires the shared API key. */
@@ -317,6 +318,49 @@ const plannerCall = (name: string, arguments_: Record<string, unknown>) => ({
 const finalAnswer = (content: string) => ({ role: "assistant", content });
 
 /**
+ * Stubs the LLM endpoint alone, serving `responses` in order. For tests that
+ * inject their own MCP client and so never reach Frappe over HTTP.
+ */
+async function withLlm<T>(
+  responses: ChatResponseMessage[],
+  run: (requests: ChatRequestBody[]) => Promise<T>,
+) {
+  const originalFetch = globalThis.fetch;
+  const requests: ChatRequestBody[] = [];
+  globalThis.fetch = (async (input, init) => {
+    assert.equal(String(input), "https://llm.example.test/v1/chat/completions");
+    assert.equal(init?.method, "POST");
+    if (typeof init?.body !== "string") throw new Error("expected JSON body");
+    requests.push(JSON.parse(init.body) as ChatRequestBody);
+    const message = responses.shift();
+    if (!message) throw new Error("unexpected LLM request");
+    return new Response(JSON.stringify({ choices: [{ message }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) satisfies typeof fetch;
+  try {
+    return await run(requests);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
+
+/** What the triage step is expected to emit when retrieval came back empty. */
+const triageVerdict = (kind: string, reply = "") =>
+  finalAnswer(JSON.stringify({ kind, reply }));
+
+/** Nothing indexed and no tools: every chat lands on the triage step. */
+const noTools = {
+  async listTools() {
+    return [];
+  },
+  async callTool(): Promise<never> {
+    throw new Error("MCP should not be called");
+  },
+};
+
+/**
  * Chat responses always append per-request accounting (usage, duration_ms).
  * Tests that assert the answer contract strip it here; the accounting fields
  * themselves are covered by the dedicated usage test.
@@ -362,6 +406,13 @@ function assertNativeToolFlow(
     JSON.stringify(requests[0]?.tools),
     new RegExp(`"name":"${expectedTool}"`),
   );
+  // The catalogue rides along on the replay too, under the one combination
+  // that makes a server extract tool syntax rather than hand it back as text.
+  assert.match(
+    JSON.stringify(requests[1]?.tools),
+    new RegExp(`"name":"${expectedTool}"`),
+  );
+  assert.equal(requests[1]?.tool_choice, "auto");
   const assistant = requests[1]?.messages[2];
   assert.equal(assistant?.role, "assistant");
   const toolCalls = assistant?.tool_calls as Array<Record<string, unknown>>;
@@ -1390,64 +1441,66 @@ test("chat calls get_environment_context before optional MCP tools when job_id e
 });
 
 test("chat does not return raw environment context when it is the only source", async () => {
-  const service = createRagService(
-    config,
-    embedder,
-    store,
-    {
-      async listTools() {
-        return [
+  await withLlm([triageVerdict("needs_data")], async () => {
+    const service = createRagService(
+      config,
+      embedder,
+      store,
+      {
+        async listTools() {
+          return [
+            {
+              name: "get_environment_context",
+              inputSchema: {
+                required: ["job_id"],
+                properties: { job_id: {}, question: {} },
+              },
+            },
+          ];
+        },
+        async callTool() {
+          return {
+            structuredContent: {
+              day_name: "Thursday",
+              timezone: "Asia/Singapore",
+            },
+          };
+        },
+      },
+      async (question, sources) =>
+        `natural:${question}:${String(sources[0]?.payload?.text ?? "")}`,
+    );
+    assert.deepEqual(
+      withoutAccounting(
+        await service.chat({
+          type: "staff",
+          question: "How do I cancel cover request",
+          limit: 3,
+          min_score: 0.7,
+          job_id: "JOB-1",
+          staff_id: "STAFF-1",
+        }),
+      ),
+      {
+        answer:
+          "Your question is being forwarded to the admin. Please wait a moment.",
+        route: "hybrid",
+        needs_admin: true,
+        reason: "insufficient_context",
+        tools_used: ["faq_search", "get_environment_context"],
+        sources: [
           {
-            name: "get_environment_context",
-            inputSchema: {
-              required: ["job_id"],
-              properties: { job_id: {}, question: {} },
+            id: "get_environment_context",
+            payload: {
+              text: '{"day_name":"Thursday","timezone":"Asia/Singapore"}',
+              source: "mcp",
+              tool: "get_environment_context",
             },
           },
-        ];
+        ],
       },
-      async callTool() {
-        return {
-          structuredContent: {
-            day_name: "Thursday",
-            timezone: "Asia/Singapore",
-          },
-        };
-      },
-    },
-    async (question, sources) =>
-      `natural:${question}:${String(sources[0]?.payload?.text ?? "")}`,
-  );
-  assert.deepEqual(
-    withoutAccounting(
-      await service.chat({
-        type: "staff",
-        question: "How do I cancel cover request",
-        limit: 3,
-        min_score: 0.7,
-        job_id: "JOB-1",
-        staff_id: "STAFF-1",
-      }),
-    ),
-    {
-      answer:
-        "Your question is being forwarded to the admin. Please wait a moment.",
-      route: "hybrid",
-      needs_admin: true,
-      reason: "insufficient_context",
-      tools_used: ["faq_search", "get_environment_context"],
-      sources: [
-        {
-          id: "get_environment_context",
-          payload: {
-            text: '{"day_name":"Thursday","timezone":"Asia/Singapore"}',
-            source: "mcp",
-            tool: "get_environment_context",
-          },
-        },
-      ],
-    },
-  );
+    );
+  });
 });
 
 test("chat planner ignores reasoning content in OpenAI-compatible responses", async () => {
@@ -1620,33 +1673,193 @@ test("chat service returns fallback when faq_search has no min_score match", asy
       return [{ id: "hit-low", score: 0.51, payload: { answer: "low" } }];
     },
   };
-  const service = createRagService(config, embedder, chatStore, {
-    async listTools() {
-      return [];
-    },
-    async callTool() {
-      throw new Error("MCP should not be called");
-    },
+  await withLlm([triageVerdict("needs_data")], async () => {
+    const service = createRagService(config, embedder, chatStore, noTools);
+    assert.deepEqual(
+      withoutAccounting(
+        await service.chat({
+          type: "staff",
+          question: "What shifts do I have tomorrow",
+          limit: 5,
+          min_score: 0.7,
+        }),
+      ),
+      {
+        answer:
+          "Your question is being forwarded to the admin. Please wait a moment.",
+        route: "fallback",
+        needs_admin: true,
+        reason: "no_faq_match",
+        tools_used: ["faq_search"],
+        sources: [],
+      },
+    );
   });
-  assert.deepEqual(
-    withoutAccounting(
-      await service.chat({
-        type: "staff",
-        question: "hello",
-        limit: 5,
-        min_score: 0.7,
-      }),
-    ),
-    {
-      answer:
-        "Your question is being forwarded to the admin. Please wait a moment.",
-      route: "fallback",
-      needs_admin: true,
-      reason: "no_faq_match",
-      tools_used: ["faq_search"],
-      sources: [],
+});
+
+/**
+ * Empty retrieval used to mean "escalate", full stop, which sent "can you help
+ * me?" to an admin as readily as a question about yesterday's roster. These
+ * cover the triage step that now stands between the two.
+ */
+test("chat answers a conversational message instead of escalating", async () => {
+  const requests = await withLlm(
+    [triageVerdict("smalltalk", "Of course — what would you like to know?")],
+    async (requests) => {
+      const service = createRagService(config, embedder, store, noTools);
+      assert.deepEqual(
+        withoutAccounting(
+          await service.chat({
+            type: "staff",
+            question: "can you help me",
+            limit: 5,
+            min_score: 0.7,
+          }),
+        ),
+        {
+          answer: "Of course — what would you like to know?",
+          route: "fallback",
+          needs_admin: false,
+          reason: "conversational",
+          tools_used: ["faq_search"],
+          sources: [],
+        },
+      );
+      return requests;
     },
   );
+  // One call, and the configured scope reaches it: without a notion of scope
+  // triage cannot tell "can you help me" from "how do I fix a broken TV".
+  assert.equal(requests.length, 1);
+  assert.match(
+    String(requests[0]?.messages[0]?.content),
+    /staff and manager questions about jobs and schedules/,
+  );
+});
+
+test("chat escalates an out-of-scope question with its own reason", async () => {
+  await withLlm([triageVerdict("out_of_scope")], async () => {
+    const service = createRagService(config, embedder, store, noTools);
+    assert.deepEqual(
+      withoutAccounting(
+        await service.chat({
+          type: "staff",
+          question: "bagaimana cara memperbaiki tv rusak",
+          limit: 5,
+          min_score: 0.7,
+        }),
+      ),
+      {
+        answer:
+          "Your question is being forwarded to the admin. Please wait a moment.",
+        route: "fallback",
+        needs_admin: true,
+        reason: "out_of_scope",
+        tools_used: ["faq_search"],
+        sources: [],
+      },
+    );
+  });
+});
+
+/**
+ * The Frappe UI offers "Yes I need support assistant" after five turns and
+ * dispatches the answer as an ordinary message. Before triage it escalated by
+ * accident — nothing matched. Triage must not now answer the one explicit way
+ * out of the bot with conversation.
+ */
+test("chat escalates when the user asks for a person", async () => {
+  await withLlm([triageVerdict("wants_human")], async () => {
+    const service = createRagService(config, embedder, store, noTools);
+    const response = await service.chat({
+      type: "staff",
+      question: "Yes I need support assistant",
+      limit: 5,
+      min_score: 0.7,
+    });
+    assert.equal(response.needs_admin, true);
+    assert.equal(response.reason, "human_requested");
+  });
+});
+
+test("chat triages on the raw message, not the condensed question", async () => {
+  const requests = await withLlm(
+    [
+      finalAnswer("Which shifts am I rostered for next week?"),
+      triageVerdict("smalltalk", "Sure — go ahead."),
+    ],
+    async (requests) => {
+      const service = createRagService(config, embedder, store, noTools);
+      const response = await service.chat({
+        type: "staff",
+        question: "yes please",
+        limit: 5,
+        min_score: 0.7,
+        history: [
+          { role: "user", content: "Hi" },
+          { role: "assistant", content: "Shall I look up your shifts?" },
+        ],
+      });
+      assert.equal(response.needs_admin, false);
+      return requests;
+    },
+  );
+  const triagePrompt = String(requests[1]?.messages[0]?.content);
+  assert.match(triagePrompt, /Latest message: yes please$/);
+});
+
+test("chat escalates when triage cannot be trusted", async () => {
+  for (const reply of [
+    finalAnswer("not json"),
+    // A kind outside the enumeration, and an "answerable" verdict with
+    // nothing written: neither is an answer to hand back.
+    triageVerdict("chit-chat", "hello there"),
+    triageVerdict("smalltalk", "   "),
+  ]) {
+    await withLlm([reply], async () => {
+      const service = createRagService(config, embedder, store, noTools);
+      assert.deepEqual(
+        withoutAccounting(
+          await service.chat({
+            type: "staff",
+            question: "hello",
+            limit: 5,
+            min_score: 0.7,
+          }),
+        ),
+        {
+          answer:
+            "Your question is being forwarded to the admin. Please wait a moment.",
+          route: "fallback",
+          needs_admin: true,
+          reason: "no_faq_match",
+          tools_used: ["faq_search"],
+          sources: [],
+        },
+      );
+    });
+  }
+});
+
+test("chat does not triage when the FAQ answered", async () => {
+  const requests = await withLlm(
+    [finalAnswer(JSON.stringify({ calls: [] }))],
+    async (requests) => {
+      const service = createRagService(config, embedder, faqStore, noTools);
+      const response = await service.chat({
+        type: "staff",
+        question: "What is Alpha Fitness",
+        limit: 5,
+        min_score: 0.7,
+      });
+      assert.equal(response.reason, "faq_match");
+      return requests;
+    },
+  );
+  // Triage costs an LLM call, so it must stay on the path that was about to
+  // give up rather than taxing every chat the FAQ already answered: the one
+  // call here is the planner, which ran before the FAQ answer was composed.
+  assert.equal(requests.length, 1);
 });
 
 test("faq routes reject missing auth", async () => {
@@ -2028,6 +2241,75 @@ test("duplicate native tool-call IDs fall back before optional MCP execution", a
     },
   );
 });
+
+/**
+ * Replies the replay can come back with that are not an answer: a model that
+ * called again and had its special tokens passed through unparsed — in the
+ * DeepSeek dialect that reached production and in Qwen's — one that answered
+ * with a call and no prose, and one that said nothing at all.
+ */
+const unusableReplies: Array<[string, ChatResponseMessage]> = [
+  [
+    "deepseek markup",
+    finalAnswer(
+      'Let me search more broadly for job-related information.\n\n<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="staff">\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>',
+    ),
+  ],
+  ["qwen markup", finalAnswer('<tool_call>{"name": "staff"}</tool_call>')],
+  ["a call and no prose", nativeToolCall("staff", {}, "call_again")],
+  [
+    // The parser did its job here. The prose is still not an answer — it is
+    // the model narrating the call it is about to make.
+    "a call with prose",
+    {
+      ...nativeToolCall("staff", {}, "call_again"),
+      content: "Let me search more broadly for job-related information.",
+    },
+  ],
+  ["nothing at all", finalAnswer("   ")],
+];
+
+for (const [label, reply] of unusableReplies) {
+  test(`native replay that is not an answer is recomposed: ${label}`, async () => {
+    const calls: Array<{ name: string; arguments: Record<string, unknown> }> =
+      [];
+    await withPlanner(
+      [nativeToolCall("staff", {}), reply, finalAnswer("Recomposed answer.")],
+      async (requests) => {
+        const response = await createRagService(
+          config,
+          embedder,
+          store,
+          plannerMcp([staffTool("staff")], calls),
+        ).chat({
+          type: "staff",
+          question: "details",
+          limit: 5,
+          min_score: 0.7,
+          staff_id: "STAFF-1",
+        });
+        assert.equal(response.answer, "Recomposed answer.");
+        assert.equal(response.reason, "tool_match");
+        // The tool ran once. Recomposing reuses the results already in hand
+        // rather than sending the model back around to fetch them again.
+        assert.deepEqual(calls, [
+          {
+            name: "staff",
+            arguments: { question: "details", staff_id: "STAFF-1" },
+          },
+        ]);
+        assert.equal(requests.length, 3);
+        // No catalogue on the recompose, by construction: nothing is left for
+        // the model to express another call with.
+        assert.equal("tools" in requests[2]!, false);
+        const recompose = requests[2]!.messages as Array<
+          Record<string, unknown>
+        >;
+        assert.match(String(recompose[0]?.content), /staff result/);
+      },
+    );
+  });
+}
 
 test("native replay capability rejection propagates after optional MCP execution", async () => {
   const originalFetch = globalThis.fetch;

@@ -44,11 +44,51 @@ Ini bukan pipeline linear; urutannya berlapis dengan fallback:
 1. faq_search          -> Qdrant, difilter source = frappe_faq
 2. tools/list          -> MCP Frappe. Gagal => tools = [] dan alur lanjut
 3. get_environment_context  (wajib, hanya bila ada job_id)
-4. native tool calling -> LLM memilih tool lewat tool_calls, lalu replay
+4. native tool calling -> LLM memilih tool lewat tool_calls, lalu replay;
+                          balasan tak terpakai = compose ulang tanpa tools
 5. fallback planner    -> bila provider tak mendukung tools, LLM diminta
                           JSON ketat {"calls":[...]}; output tak valid = 0 call
 6. compose             -> LLM menyusun jawaban akhir dari FAQ + hasil tool
+7. triage              -> hanya bila retrieval kosong: LLM memutuskan apakah
+                          pesan itu memang butuh data, atau cuma percakapan
+                          yang bisa dijawab sendiri; gagal = eskalasi
 ```
+
+Step 4 mengirim katalog tool dua kali: saat memilih, dan sekali lagi pada replay
+— tetap dengan `tool_choice: "auto"`. Terlihat mubazir karena hasil tool sudah
+di tangan, tapi `tools` + `auto` adalah satu-satunya kombinasi yang membuat
+server mengekstrak sintaks tool-call dari output model. Di kombinasi lain
+(tanpa `tools`, atau `tool_choice: "none"`) server mengembalikan teks mentah apa
+adanya, dan token khusus model — `<｜｜DSML｜｜tool_calls>` pada DeepSeek,
+`<tool_call>` pada Qwen — sampai ke user sebagai "jawaban". `"none"` bukan
+setelan yang lebih aman meski terdengar begitu: definisi tool tetap masuk prompt
+kecuali server dijalankan dengan flag khusus, jadi model masih bisa memanggil,
+sementara hasil parser justru dibuang.
+
+Replay yang isinya `tool_calls` bukan jawaban, walau disertai prosa — prosanya
+adalah model menarasikan panggilan berikutnya. Begitu juga balasan kosong atau
+yang masih bermarkup (parser tool-call sifatnya per-model dan cukup sering
+bermasalah, jadi lapis ini tetap perlu). Semua kasus itu tidak diulang dengan
+bentuk yang sama, melainkan disusun ulang dari hasil tool yang sudah ada lewat
+request tanpa `tools` sama sekali (`chat.native_tool_recompose`) — di sana tidak
+ada lagi yang bisa dipakai model untuk memanggil. Konsekuensinya satu ronde tool
+per chat, sama seperti jalur planner.
+
+Step 7 ada karena retrieval kosong bukan bukti bahwa manusia dibutuhkan.
+"Can you help me?" dan "roster saya kemarin apa?" sama-sama tidak menghasilkan
+FAQ maupun hasil tool, tetapi hanya yang kedua yang butuh admin. Triage
+mengklasifikasikan pesan menjadi `smalltalk` / `capability` (dijawab sendiri,
+singkat, tanpa mengarang fakta) atau `needs_data` / `out_of_scope` /
+`wants_human` (diteruskan ke admin). Cakupan asisten diambil dari
+`ASSISTANT_SCOPE`, katalog tool, dan kutipan FAQ. Biayanya satu LLM call, dan
+hanya pada jalur yang tadinya menyerah.
+
+`wants_human` menang atas kind lain betapapun santai kalimatnya. Ini bukan
+kehalusan: UI Frappe menawarkan tombol "Yes I need support assistant" setelah
+lima giliran dan mengirim jawabannya sebagai pesan biasa. Sebelum ada triage,
+kalimat itu tereskalasi karena kebetulan tidak match apa pun. Tanpa aturan ini
+triage akan membalasnya dengan basa-basi, dan satu-satunya pintu keluar user
+ke manusia tertutup.
 
 Service ini stateless: memori percakapan adalah milik Frappe (Chat Session).
 Caller mengirim `history` (maks 20 turn `{role: user|assistant, content}`,
@@ -57,14 +97,22 @@ seolah membuka percakapan baru.
 
 Route yang dilaporkan di response:
 
-| `route`    | Kondisi                                                |
-| ---------- | ------------------------------------------------------ |
-| `faq`      | Hanya FAQ yang menjawab, tidak ada tool berhasil       |
-| `hybrid`   | FAQ dan/atau environment digabung dengan hasil tool    |
-| `fallback` | Tidak ada FAQ dan tidak ada tool — diteruskan ke admin |
+| `route`    | Kondisi                                              |
+| ---------- | ---------------------------------------------------- |
+| `faq`      | Hanya FAQ yang menjawab, tidak ada tool berhasil     |
+| `hybrid`   | FAQ dan/atau environment digabung dengan hasil tool  |
+| `fallback` | Retrieval kosong — diputuskan oleh triage (lihat §2) |
 
-Ketika tidak ada konteks memadai, service **tidak** mengarang: ia mengembalikan
-`needs_admin: true` dengan `reason` (`no_faq_match` / `insufficient_context`).
+Ketika tidak ada konteks memadai, service **tidak** mengarang. Yang menentukan
+adalah `needs_admin`, bukan `route`:
+
+| `reason`               | `needs_admin` | Kondisi                                       |
+| ---------------------- | ------------- | --------------------------------------------- |
+| `conversational`       | `false`       | Basa-basi / pertanyaan soal kemampuan asisten |
+| `no_faq_match`         | `true`        | Butuh data, tidak ada FAQ maupun environment  |
+| `insufficient_context` | `true`        | Butuh data, hanya environment yang tersedia   |
+| `out_of_scope`         | `true`        | Di luar cakupan asisten sama sekali           |
+| `human_requested`      | `true`        | User minta bicara dengan admin/support        |
 
 ### Alur Ingestion
 
@@ -168,9 +216,9 @@ pertanyaan mandiri. `type` memilih katalog tool (`staff` / `manager`) tetapi
 ```
 
 `usage` menjumlahkan `usage` yang dilaporkan provider dari **semua** LLM call
-yang selesai dalam satu chat (condense, tool selection, replay, planner,
-compose) — angka billing provider, bukan estimasi; token embedding tidak
-termasuk. Call yang backend-nya tidak melaporkan usage tetap menaikkan
+yang selesai dalam satu chat (condense, tool selection, replay, recompose,
+planner, compose, triage) — angka billing provider, bukan estimasi; token
+embedding tidak termasuk. Call yang backend-nya tidak melaporkan usage menaikkan
 `llm_calls` tetapi menyumbang 0 token. `duration_ms` adalah waktu proses
 wall-clock. Keduanya juga dikirim di payload callback `/chat/async` — termasuk
 saat chat gagal: call yang sempat selesai sebelum kegagalan tetap dibayar,
@@ -358,6 +406,7 @@ atas file `.env`.
 | `QDRANT_API_KEY`        | —                  | Wajib bila Qdrant terjangkau dari luar                |
 | `LOG_LEVEL`             | `info`             |                                                       |
 | `LOG_CHAT_REQUEST_BODY` | `false`            | Mencatat pertanyaan member — jangan aktif di produksi |
+| `ASSISTANT_SCOPE`       | —                  | Satu kalimat cakupan asisten, dipakai step triage     |
 | `LLM_TIMEOUT_MS`        | `60000`            |                                                       |
 | `LLM_MAX_RETRIES`       | `2`                |                                                       |
 | `EMBEDDING_TIMEOUT_MS`  | `30000`            |                                                       |

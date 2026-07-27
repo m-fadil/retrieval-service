@@ -51,7 +51,7 @@ npm run dev        # tsx watch, log pino-pretty
 | ---------------------- | ------------------------------------- |
 | `npm run dev`          | Dev server dengan watch               |
 | `npm run build`        | Typecheck + emit ke `dist/`           |
-| `npm test`             | `node --test` (59 test)               |
+| `npm test`             | `node --test` (91 test)               |
 | `npm run check`        | `build` lalu `test` — sama seperti CI |
 | `npm run format`       | Prettier tulis                        |
 | `npm run format:check` | Prettier verifikasi (dipakai CI)      |
@@ -126,6 +126,13 @@ Catatan yang mudah terlewat:
   upsert pertama dengan pesan eksplisit, bukan gagal diam-diam.
 - `LOG_CHAT_REQUEST_BODY=true` mencatat pertanyaan asli member. Jangan aktif di
   produksi.
+- `ASSISTANT_SCOPE` mendeskripsikan cakupan asisten dalam satu kalimat, mis.
+  `"pertanyaan staff dan manager soal job, shift, dan jadwal"`. Dipakai step
+  triage untuk memutuskan apakah pesan yang tidak menghasilkan retrieval itu
+  sekadar percakapan (dijawab sendiri, `reason: "conversational"`) atau memang
+  harus naik ke admin (`reason: "out_of_scope"` / `"no_faq_match"`). Boleh
+  kosong — cakupan lalu disimpulkan dari katalog tool MCP dan kutipan FAQ,
+  dengan hasil yang lebih mudah meleset.
 
 ## Keamanan
 

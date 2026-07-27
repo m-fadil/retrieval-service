@@ -35,6 +35,7 @@ const config: AppConfig = {
   MAX_BODY_BYTES: 1_048_576,
   RATE_LIMIT_MAX: 100_000,
   RATE_LIMIT_WINDOW_MS: 60_000,
+  ASSISTANT_SCOPE: "",
 };
 
 const authHeaders = { authorization: `Bearer ${config.RETRIEVAL_API_KEY}` };

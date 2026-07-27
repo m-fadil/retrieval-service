@@ -34,6 +34,13 @@ const EnvSchema = z.object({
   EMBEDDING_MODEL: z.string().min(1),
   LOG_CHAT_REQUEST_BODY: BooleanEnvSchema,
   LOG_LEVEL: LogLevelSchema.default("info"),
+  // One sentence describing what this assistant covers, e.g. "staff and
+  // manager questions about jobs, shifts, schedules and payroll at Alpha
+  // Fitness". Read only by the triage step, which needs a notion of "in
+  // scope" to tell a conversational turn apart from a question about
+  // something the assistant does not do. Left empty, triage infers the
+  // scope from the advertised tool catalogue and the FAQ excerpts instead.
+  ASSISTANT_SCOPE: z.string().trim().default(""),
   // Timeouts (ms). Every outbound call must be bounded: a hung upstream
   // otherwise pins a Frappe background worker for the life of the request.
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
