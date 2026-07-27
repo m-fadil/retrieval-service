@@ -82,7 +82,7 @@ const rag: RagService = {
   async search(input) {
     const sources = [
       { id: "hit-1", score: 0.85, payload: { text: input.question } },
-      { id: "hit-2", score: 0.51, payload: { text: "unrelated" } },
+      { id: "hit-2", score: 0.2, payload: { text: "unrelated" } },
     ];
     return {
       matches: sources.filter((hit) => hit.score >= input.min_score),
@@ -127,7 +127,7 @@ const rag: RagService = {
   > {
     const sources = [
       { id: "hit-1", score: 0.85, payload: { text: input.question } },
-      { id: "hit-2", score: 0.51, payload: { text: "unrelated" } },
+      { id: "hit-2", score: 0.2, payload: { text: "unrelated" } },
     ].filter((hit) => hit.score >= input.min_score);
     return sources.length
       ? {
@@ -465,13 +465,13 @@ test("search route accepts explicit lower min_score", async () => {
     method: "POST",
     url: "/search",
     headers: authHeaders,
-    payload: { question: "hello", min_score: 0.5 },
+    payload: { question: "hello", min_score: 0.1 },
   });
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json(), {
     matches: [
       { id: "hit-1", score: 0.85, payload: { text: "hello" } },
-      { id: "hit-2", score: 0.51, payload: { text: "unrelated" } },
+      { id: "hit-2", score: 0.2, payload: { text: "unrelated" } },
     ],
   });
 });

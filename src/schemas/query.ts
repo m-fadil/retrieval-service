@@ -18,8 +18,24 @@ export const AnswerRequestSchema = z.object({
   limit: z.number().int().positive().max(20).default(5),
 });
 
+/**
+ * Default cosine cut-off for a match worth answering from.
+ *
+ * Not 0.7, which is the figure that looks right and that no query reaches:
+ * cosine scores are a property of the embedding model, and against the model
+ * in use a question typed word for word the same as an indexed document
+ * scores 0.63-0.88, while the paraphrases real users write score 0.30-0.78.
+ * A 0.7 default filtered out most true matches and reported "no match" for
+ * documents that plainly answered the question. Unrelated questions score
+ * below 0.21 against the same index, which is the margin this relies on.
+ *
+ * Callers that know their own corpus should send `min_score` explicitly;
+ * recalibrate this whenever EMBEDDING_MODEL changes.
+ */
+export const DEFAULT_MIN_SCORE = 0.3;
+
 export const SearchRequestSchema = AnswerRequestSchema.extend({
-  min_score: z.number().min(0).max(1).default(0.7),
+  min_score: z.number().min(0).max(1).default(DEFAULT_MIN_SCORE),
   // Restricts matches to one payload `source` (e.g. "frappe_faq"). The
   // collection is shared with /index documents, so FAQ-oriented callers —
   // dedup and the faq_search MCP tool — must scope their searches or non-FAQ
@@ -41,7 +57,7 @@ export const ChatRequestSchema = z
     // questions before retrieval; without them the service has no memory.
     history: z.array(ChatHistoryMessageSchema).max(20).optional(),
     limit: z.number().int().positive().max(20).default(5),
-    min_score: z.number().min(0).max(1).default(0.7),
+    min_score: z.number().min(0).max(1).default(DEFAULT_MIN_SCORE),
     job_id: z.string().trim().min(1).optional(),
     staff_id: z.string().trim().min(1).optional(),
     job_schedule_id: z.string().trim().min(1).optional(),
