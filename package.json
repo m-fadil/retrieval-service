@@ -15,7 +15,7 @@
   "dependencies": {
     "@qdrant/js-client-rest": "^1.19.0",
     "fastify": "^5.11.3",
-    "openai": "^6.49.0",
+    "openai": "^7.4.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
