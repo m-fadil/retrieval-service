@@ -78,12 +78,18 @@ jobs:
           provenance: mode=max
           sbom: true
 
+      # No push-to-registry: that stores the sigstore bundle under a
+      # `sha256-<digest>` referrer tag, which GHCR lists as a tagged version
+      # alongside real releases. The bundle stays in GitHub's attestation store
+      # and verifies with:
+      #   gh attestation verify --owner ${{ github.repository_owner }} \
+      #     oci://ghcr.io/${{ github.repository }}:<tag>
+      # The in-registry provenance and SBOM above are unaffected.
       - name: Attest provenance
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
 
       - name: Summary
         run: |
