@@ -34,32 +34,74 @@ const EnvSchema = z.object({
   EMBEDDING_MODEL: z.string().min(1),
   LOG_CHAT_REQUEST_BODY: BooleanEnvSchema,
   LOG_LEVEL: LogLevelSchema.default("info"),
-  // One sentence describing what this assistant covers, e.g. "staff and
-  // manager questions about jobs, shifts, schedules and payroll at Alpha
-  // Fitness". Read only by the triage step, which needs a notion of "in
-  // scope" to tell a conversational turn apart from a question about
-  // something the assistant does not do. Left empty, triage infers the
-  // scope from the advertised tool catalogue and the FAQ excerpts instead.
+  // Makes Fastify read X-Forwarded-For as `request.ip`. Off, every rate-limit
+  // bucket behind a proxy collapses into the proxy's address; on, an untrusted
+  // client can forge its own bucket key. Enable only where the proxy overwrites
+  // the header.
+  TRUST_PROXY: BooleanEnvSchema,
+  // One sentence naming what the assistant covers, e.g. "staff and manager
+  // questions about jobs, shifts, schedules and payroll at Alpha Fitness".
+  // Read only by the triage step, which needs an in-scope boundary to separate
+  // a conversational turn from a question the assistant cannot serve. Empty
+  // falls back to inferring scope from the tool catalogue and FAQ excerpts.
   ASSISTANT_SCOPE: z.string().trim().default(""),
-  // Timeouts (ms). Every outbound call must be bounded: a hung upstream
-  // otherwise pins a Frappe background worker for the life of the request.
+  // Timeouts (ms). Every outbound call is bounded: an unbounded one pins a
+  // Frappe background worker for as long as the upstream hangs.
   LLM_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  // Ceiling on one whole /chat, across all its LLM, MCP and embedding calls.
+  // Per-call timeouts do not bound the flow: six sequential LLM calls, each
+  // retried LLM_MAX_RETRIES times, compound into minutes. On expiry the
+  // in-flight calls are aborted and the question is escalated.
+  //
+  // Invariant: below the caller's timeout, which is 90s in Frappe (CHAT_TIMEOUT
+  // in alpha_fitness/integrations/retrieval_faq.py). Above it, the caller has
+  // already disconnected while this side keeps billing tokens. Raise only in
+  // step with the caller.
+  CHAT_DEADLINE_MS: z.coerce.number().int().positive().default(75_000),
   EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  EMBEDDING_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  // Texts per embeddings request. The API accepts an array, so indexing and
+  // reindexing batch rather than issuing one HTTP call per FAQ entry.
+  EMBEDDING_BATCH_SIZE: z.coerce.number().int().positive().max(512).default(64),
   FRAPPE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   QDRANT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
-  // Abuse limits. These endpoints spend money per call (LLM + embeddings),
-  // so an unbounded body or request rate is a cost-DoS vector.
+  // Abuse limits. These endpoints bill per call (LLM + embeddings), so an
+  // unbounded body size or request rate is a cost-DoS vector.
   MAX_BODY_BYTES: z.coerce.number().int().positive().default(1_048_576),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  // Separate, larger budget for the FAQ sync paths. They carry no `actor`, so
+  // they share one address bucket, and Frappe doc_events call them once per FAQ
+  // row: a bulk import exceeds RATE_LIMIT_MAX mid-run and the 429 surfaces as a
+  // failed doc_event, not a deferred one. Bounded regardless, since content_hash
+  // skips unchanged rows before the embedding call.
+  FAQ_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(600),
+  // Background /chat/async work. Each accepted job costs three to six LLM
+  // calls, so an unbounded burst fans out into hundreds of concurrent paid
+  // calls. Jobs past MAX_CONCURRENT queue; jobs past MAX_QUEUED get 503, which
+  // the caller can retry — as opposed to a 202 whose work is then dropped.
+  CHAT_ASYNC_MAX_CONCURRENT: z.coerce.number().int().positive().default(8),
+  CHAT_ASYNC_MAX_QUEUED: z.coerce.number().int().positive().default(64),
+  // Negotiation mode for provider features that not every OpenAI-compatible
+  // backend implements: "auto" probes once and caches a rejection for the life
+  // of the process, "on" requires the feature, "off" never attempts it.
+  //
+  // LLM_NATIVE_TOOLS selects provider-parsed tool calls vs the JSON planner
+  // fallback; LLM_JSON_SCHEMA selects Structured Outputs (response_format
+  // json_schema, strict) vs asking for JSON in the prompt.
+  LLM_NATIVE_TOOLS: z.enum(["auto", "on", "off"]).default("auto"),
+  LLM_JSON_SCHEMA: z.enum(["auto", "on", "off"]).default("auto"),
+  // Page ceiling for tools/list pagination: bounds a server that returns a
+  // cursor indefinitely.
+  MCP_MAX_TOOL_PAGES: z.coerce.number().int().positive().max(100).default(20),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;
 
 /**
- * Normalize an OpenAI-compatible base URL: a bare provider root defaults to
- * /v1, an explicit path (e.g. a proxy prefix) is respected as-is.
+ * Normalizes an OpenAI-compatible base URL: a bare root gets /v1, an explicit
+ * path (e.g. a proxy prefix) is preserved.
  */
 export function openAiBaseURL(rawUrl: string): string {
   const url = new URL(rawUrl);
@@ -79,8 +121,8 @@ export function readDotEnv(
         .map((line) => {
           const index = line.indexOf("=");
           if (index === -1) return [line, ""];
-          // Tolerate the common KEY="value" / KEY='value' convention; a
-          // quoted API key would otherwise fail auth with the quotes baked in.
+          // Strips the KEY="value" / KEY='value' convention: retained quotes
+          // become part of the value and fail auth.
           const raw = line.slice(index + 1).trim();
           const value = /^(["']).*\1$/.test(raw) ? raw.slice(1, -1) : raw;
           return [line.slice(0, index), value];
