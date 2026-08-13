@@ -86,8 +86,9 @@ jobs:
           cache-to: type=gha,mode=max
 
       # Covers container boot and config.ts validation of a full environment.
-      # Credentials are fake by design: /health is the only unauthenticated
-      # route and its sole dependency is Qdrant, expected to be unreachable.
+      # Credentials are fake by design: the health routes are the only
+      # unauthenticated ones and their sole dependency is Qdrant, expected here
+      # to be unreachable.
       - name: Smoke test
         run: |
           docker run -d --name smoke -p 3000:3000 \
@@ -128,6 +129,31 @@ jobs:
             exit 1
           fi
           echo "unauthenticated /chat correctly rejected"
+
+          # Liveness and readiness must disagree while Qdrant is unreachable:
+          # the process is fine, but this replica cannot answer anything.
+          live=$(curl -s -o /dev/null -w '%{http_code}' \
+            http://127.0.0.1:3000/health/live)
+          ready=$(curl -s -o /dev/null -w '%{http_code}' \
+            http://127.0.0.1:3000/health/ready)
+          if [ "$live" != "200" ] || [ "$ready" != "503" ]; then
+            echo "expected live=200 ready=503, got live=$live ready=$ready" >&2
+            docker logs smoke >&2
+            exit 1
+          fi
+          echo "liveness and readiness report independently"
+
+          # A malformed body is the caller's fault: 400, not a 500.
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'authorization: Bearer ci-smoke-key' \
+            -H 'content-type: application/json' -d '{"limit":3}' \
+            http://127.0.0.1:3000/chat)
+          if [ "$status" != "400" ]; then
+            echo "expected 400 from an invalid /chat body, got $status" >&2
+            docker logs smoke >&2
+            exit 1
+          fi
+          echo "invalid /chat body correctly rejected"
 
           # Graceful shutdown: exit on SIGTERM must precede docker stop's 10s
           # SIGKILL timeout.

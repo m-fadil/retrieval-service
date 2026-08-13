@@ -21,9 +21,8 @@ export interface VectorStore {
   delete(ids: string[]): Promise<void>;
   deleteBySource(source: string): Promise<void>;
   /**
-   * Deletes every point of `source` except those whose original id is in
-   * `keepIds`. Lets a reindex converge without a window where the index is
-   * empty.
+   * Deletes every point of `source` whose original id is absent from `keepIds`.
+   * Lets a reindex converge with no window where the index is empty.
    */
   deleteBySourceExcept(source: string, keepIds: string[]): Promise<void>;
   /** Counts what deleteBySourceExcept would remove, for reindex reporting. */
@@ -51,9 +50,9 @@ function staleFilter(source: string, keepIds: string[]) {
 }
 
 /**
- * True when Qdrant rejected the call because the collection does not exist —
- * e.g. before the first upsert lazily creates it, or right after
- * dropCollection. Reads and deletes treat that as an empty collection.
+ * True when Qdrant rejected the call for a missing collection — before the first
+ * upsert lazily creates it, or after dropCollection. Reads and deletes treat
+ * that as an empty collection.
  */
 export function isMissingCollection(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
@@ -62,10 +61,10 @@ export function isMissingCollection(error: unknown): boolean {
     data?: { status?: { error?: unknown } };
   };
   if (status !== 404) return false;
-  // A bare 404 is not enough: a misconfigured QDRANT_URL (wrong path, proxy)
-  // also yields 404s, and treating those as an empty collection would make
-  // every search silently return nothing. Require Qdrant's own error body,
-  // e.g. "Not found: Collection `knowledge_base` doesn't exist!".
+  // Status alone is insufficient: a misconfigured QDRANT_URL (wrong path, proxy)
+  // also returns 404, and reading that as an empty collection makes every search
+  // return nothing. Requires Qdrant's own error body, e.g.
+  // "Not found: Collection `knowledge_base` doesn't exist!".
   const detail = data?.status?.error;
   return (
     typeof detail === "string" && /collection.*doesn't exist/i.test(detail)
@@ -101,16 +100,16 @@ export function createQdrantStore(
         });
         created = true;
       } catch (error) {
-        // A concurrent writer may have created it between the existence check
-        // and this call; only that race is tolerated — fall through to the
-        // dimension check below, which also validates the racing creation.
+        // Tolerates exactly one race: a concurrent writer creating the collection
+        // between the existence check and this call. Falls through to the
+        // dimension check, which validates that creation too.
         const raced = await client.collectionExists(config.QDRANT_COLLECTION);
         if (!raced.exists) throw error;
       }
     }
     if (!created) {
-      // A dimension change (e.g. a different embedding model) would otherwise
-      // surface as opaque upsert failures much later.
+      // Fails fast on a dimension change (a different embedding model), which
+      // otherwise surfaces as opaque upsert errors much later.
       const info = await client.getCollection(config.QDRANT_COLLECTION);
       const params = info.config?.params?.vectors;
       const existingSize =
@@ -123,7 +122,7 @@ export function createQdrantStore(
         );
       }
     }
-    // Required for the source filter used by search and reindex to stay fast.
+    // Required for the source filter in search and reindex to stay indexed.
     await client.createPayloadIndex(config.QDRANT_COLLECTION, {
       field_name: "source",
       field_schema: "keyword",
@@ -146,6 +145,11 @@ export function createQdrantStore(
       if (!vectorSize) return;
       await ensureCollection(vectorSize);
       await client.upsert(config.QDRANT_COLLECTION, {
+        // Without wait, Qdrant acknowledges an upsert before it is searchable.
+        // The FAQ write path reads its own writes — dedup searches immediately
+        // after an upsert — so an early return reports points the next search
+        // cannot see.
+        wait: true,
         points: points.map((point) => ({
           ...point,
           id: pointId(point.id),
@@ -209,8 +213,8 @@ export function createQdrantStore(
     },
     async dropCollection() {
       await client.deleteCollection(config.QDRANT_COLLECTION);
-      // The next upsert recreates the collection at the dimension the current
-      // embedding model actually produces.
+      // The next upsert recreates the collection at the current embedding
+      // model's dimension.
       collectionReady = false;
     },
     async search(vector, limit, options) {

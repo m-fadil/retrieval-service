@@ -34,7 +34,17 @@ const config: AppConfig = {
   QDRANT_TIMEOUT_MS: 10_000,
   MAX_BODY_BYTES: 1_048_576,
   RATE_LIMIT_MAX: 100_000,
+  FAQ_RATE_LIMIT_MAX: 100_000,
   RATE_LIMIT_WINDOW_MS: 60_000,
+  TRUST_PROXY: false,
+  CHAT_DEADLINE_MS: 120_000,
+  EMBEDDING_MAX_RETRIES: 0,
+  EMBEDDING_BATCH_SIZE: 64,
+  CHAT_ASYNC_MAX_CONCURRENT: 8,
+  CHAT_ASYNC_MAX_QUEUED: 64,
+  LLM_NATIVE_TOOLS: "auto",
+  LLM_JSON_SCHEMA: "auto",
+  MCP_MAX_TOOL_PAGES: 20,
   ASSISTANT_SCOPE: "",
 };
 
@@ -314,7 +324,8 @@ test("reindex writes the new generation before retiring stale points", async () 
   const trackingStore: VectorStore = {
     ...store,
     async upsert(points) {
-      order.push(`upsert:${points[0]?.id}`);
+      // One call per batch, so the whole batch's ids are recorded together.
+      order.push(`upsert:${points.map((point) => point.id).join(",")}`);
     },
     async countBySourceExcept() {
       return 2;
@@ -335,17 +346,13 @@ test("reindex writes the new generation before retiring stale points", async () 
       { id: "B", question: "q2", answer: "a2", enabled: true },
     ],
   });
-  // reindex is fire-and-forget; wait for it to settle.
+  // reindex is fire-and-forget, so wait for it to settle.
   for (let i = 0; i < 50; i += 1) {
     if ((await service.reindexStatus()).status === "completed") break;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 
-  assert.deepEqual(order, [
-    "upsert:frappe_faq:A",
-    "upsert:frappe_faq:B",
-    "delete-stale",
-  ]);
+  assert.deepEqual(order, ["upsert:frappe_faq:A,frappe_faq:B", "delete-stale"]);
   assert.ok(
     !order.includes("delete-all"),
     "reindex must never blank the index up front",

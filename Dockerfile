@@ -39,12 +39,12 @@ USER node
 
 EXPOSE 3000
 
-# /health is the one route the API key guard exempts, so the check needs no
-# credentials. It returns 200 with `qdrant: false` when Qdrant is unreachable,
-# which is deliberate: the process is alive and should not be restarted for a
-# dependency outage.
+# The health routes are the only ones the API key guard exempts, so the check
+# needs no credentials. Liveness deliberately, not readiness: a restart cannot
+# fix an unreachable Qdrant, and /health/ready reports 503 for that so a load
+# balancer — which can act on it — is the one that sees it.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # Node runs as PID 1. server.ts installs SIGTERM/SIGINT handlers so `docker
 # stop` drains in-flight requests instead of waiting out the kill timeout.

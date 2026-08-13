@@ -24,7 +24,7 @@ Frappe Backend
   v
 retrieval-service
   |
-  |-- Fastify (guard API key + rate limit di root instance)
+  |-- Fastify (guard API key + rate limit + validasi Zod di root instance)
   |-- Embedding client (OpenAI-compatible)
   |-- Qdrant retrieval (difilter per source)
   |-- MCP tool router --> Frappe (header X-Alpha-Actor)
@@ -137,22 +137,24 @@ memanggil embedding, sehingga sinkronisasi berulang tidak berbiaya token.
 **Endpoint yang benar-benar ada.** Semua kecuali `/health` mewajibkan
 `Authorization: Bearer $RETRIEVAL_API_KEY`.
 
-| Method | Path                  | Fungsi                                               |
-| ------ | --------------------- | ---------------------------------------------------- |
-| GET    | `/health`             | Liveness + status Qdrant. Publik.                    |
-| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM               |
-| POST   | `/chat/async`         | Seperti `/chat`, tapi 202 + callback ke Frappe       |
-| POST   | `/answer`             | Retrieval + jawaban LLM                              |
-| POST   | `/query`              | Alias `/answer` (kompatibilitas)                     |
-| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source`  |
-| POST   | `/index`              | Index dokumen generik                                |
-| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                              |
-| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                     |
-| POST   | `/faq/recreate`       | Drop collection (semua source) lalu reindex asinkron |
-| GET    | `/faq/reindex/status` | Status reindex terakhir                              |
-| POST   | `/faq/generate`       | Draft FAQ dari transkrip                             |
-| PUT    | `/faq/:id`            | Upsert satu FAQ                                      |
-| DELETE | `/faq/:id`            | Hapus satu FAQ                                       |
+| Method | Path                  | Fungsi                                                  |
+| ------ | --------------------- | ------------------------------------------------------- |
+| GET    | `/health`             | Liveness + status Qdrant. Publik.                       |
+| GET    | `/health/live`        | Proses hidup. Selalu 200. Publik.                       |
+| GET    | `/health/ready`       | 503 bila Qdrant tak terjangkau. Publik.                 |
+| POST   | `/chat`               | Orkestrasi penuh: FAQ + MCP tool + LLM                  |
+| POST   | `/chat/async`         | Seperti `/chat`, 202 + callback; 503 bila backlog penuh |
+| POST   | `/answer`             | Retrieval + jawaban LLM                                 |
+| POST   | `/query`              | Alias `/answer` (kompatibilitas)                        |
+| POST   | `/search`             | Semantic search mentah, filter `min_score`+`source`     |
+| POST   | `/index`              | Index dokumen generik                                   |
+| POST   | `/faq/bulk`           | Batch upsert/delete FAQ                                 |
+| POST   | `/faq/reindex`        | Reindex asinkron, non-destruktif                        |
+| POST   | `/faq/recreate`       | Drop collection (semua source) lalu reindex asinkron    |
+| GET    | `/faq/reindex/status` | Status reindex terakhir                                 |
+| POST   | `/faq/generate`       | Draft FAQ dari transkrip                                |
+| PUT    | `/faq/:id`            | Upsert satu FAQ                                         |
+| DELETE | `/faq/:id`            | Hapus satu FAQ                                          |
 
 Tidak ada prefix `/v1` dan tidak ada `/ready` — `/health` merangkap keduanya.
 `/health` mengembalikan 200 selama proses hidup, dengan status dependency di
@@ -284,6 +286,7 @@ dengan `tools` ditolak, error dideteksi dan alur turun ke planner berbasis JSON
 Node.js 22 LTS
 TypeScript
 Fastify 5
+@fastify/rate-limit
 Zod 4
 openai              (chat / tool calling / embedding, OpenAI-compatible)
 @qdrant/js-client-rest
@@ -322,28 +325,54 @@ retrieval-service/
 ├── src/
 │   ├── server.ts          # buildApp, hook global, graceful shutdown
 │   ├── config.ts          # skema env Zod + loader .env
+│   ├── plugins/
+│   │   └── zod.ts         # validator compiler + error handler global
 │   ├── routes/
-│   │   ├── auth.ts        # guard API key + rate limiter
-│   │   ├── health.ts
+│   │   ├── auth.ts        # guard API key + key rate limit
+│   │   ├── health.ts      # /health, /health/live, /health/ready
 │   │   ├── index.ts       # /index /search /answer /chat /query
 │   │   └── faq.ts         # /faq/*
 │   ├── schemas/
 │   │   ├── query.ts
 │   │   └── faq.ts
+│   ├── chat/              # alur /chat, dipecah per tanggung jawab
+│   │   ├── orchestrator.ts
+│   │   ├── tools.ts
+│   │   ├── triage.ts
+│   │   ├── prompts.ts
+│   │   ├── parse.ts
+│   │   └── log.ts
 │   └── services/
+│       ├── llm.ts
 │       ├── embeddings.ts
 │       ├── qdrant.ts
-│       ├── rag.ts
+│       ├── rag.ts         # fasad: index/search/answer/chat/generateFaq
+│       ├── faq-generate.ts
 │       ├── faq.ts
 │       ├── mcp.ts
+│       ├── dispatch.ts
 │       └── frappe.ts
 └── test/
+    ├── fixtures.ts        # fixture bersama (bukan file test)
+    ├── chat.test.ts       # alur /chat: condense, retrieval, log, triage
+    ├── chat-tools.test.ts # native tool calling, planner, deadline
     ├── config.test.ts
+    ├── dispatch.test.ts
+    ├── embeddings.test.ts
     ├── faq.test.ts
+    ├── http.test.ts       # validasi, rate limit, probe, backlog
+    ├── llm.test.ts        # negosiasi kapabilitas provider
+    ├── mcp.test.ts        # paginasi, filter argumen, outputSchema
     ├── qdrant.test.ts
-    ├── security.test.ts
-    └── server.test.ts
+    ├── routes.test.ts     # kontrak HTTP per route
+    └── security.test.ts
 ```
+
+`chat/` dipisah dari `services/rag.ts` karena file itu sempat memegang enam
+tanggung jawab sekaligus (klien LLM, dua jalur tool calling, triage, seluruh
+prompt, generate FAQ, indexing) dalam 1.146 baris — dan test-nya mengikuti
+bentuk itu menjadi satu file 2.441 baris. `services/rag.ts` sekarang hanya
+fasad yang merangkai bagian-bagiannya.
 
 Setiap service diekspos lewat factory (`createRagService`, `createQdrantStore`,
 …) dan di-inject melalui `buildApp({ … })`. Test mengganti dependency dengan
@@ -367,6 +396,32 @@ catatan atas keputusannya.
   `QDRANT_API_KEY` berarti seluruh isi collection terbuka bagi siapa pun yang
   bisa menjangkau port tersebut.
 - Log dibatasi rotasi (`max-size`, `max-file`) agar disk tidak habis.
+
+### 7.1 Service ini stateful: jalankan satu replica
+
+Meski dikemas sebagai container tanpa volume, prosesnya **tidak** stateless.
+Empat hal hidup di memori dan tidak dibagi antar replica:
+
+| State                   | Lokasi                 | Akibat bila ada N replica                                                                         |
+| ----------------------- | ---------------------- | ------------------------------------------------------------------------------------------------- |
+| Bucket rate limit       | `@fastify/rate-limit`  | Batas efektif `RATE_LIMIT_MAX * N` per user                                                       |
+| `reindexState`          | `services/faq.ts`      | Dua reindex bisa jalan bersamaan; `/faq/reindex/status` menjawab sesuai replica yang kena LB      |
+| `collectionReady`       | `services/qdrant.ts`   | Setelah `/faq/recreate` di satu replica, replica lain masih menganggap collection siap            |
+| Queue job `/chat/async` | `services/dispatch.ts` | `CHAT_ASYNC_MAX_CONCURRENT * N` panggilan LLM berbarengan, dan backlog tidak terlihat lintas node |
+
+Maka: **deploy dengan satu replica**, dan skalakan lewat `CHAT_ASYNC_MAX_CONCURRENT`
+serta ukuran mesin, bukan lewat jumlah replica. Untuk benar-benar horizontal,
+tiga hal harus dieksternalisasi lebih dulu: store rate limit ke Redis (didukung
+plugin), state reindex ke Frappe atau Redis, dan queue `/chat/async` ke queue
+yang persisten. Sebelum itu, N > 1 tidak salah secara fatal — tapi perilakunya
+tidak seperti yang dokumen ini janjikan.
+
+Job `/chat/async` juga tidak durabel: hidupnya sepanjang proses. Yang dijamin
+hanya bahwa job yang **sudah diterima** akan diselesaikan sebelum proses
+berhenti — SIGTERM menutup server lalu men-drain job lewat hook `onClose`,
+sehingga rolling deploy tidak lagi memutus job yang panggilan LLM-nya sudah
+dibayar. Job yang tidak tertampung ditolak 503 saat caller masih mendengarkan,
+bukan diterima 202 lalu dibuang.
 
 Bila Frappe berada di compose/network lain:
 
@@ -399,25 +454,47 @@ atas file `.env`.
 
 **Opsional (dengan default)**
 
-| Variable                | Default            | Keterangan                                            |
-| ----------------------- | ------------------ | ----------------------------------------------------- |
-| `PORT` / `HOST`         | `3000` / `0.0.0.0` |                                                       |
-| `QDRANT_COLLECTION`     | `knowledge_base`   |                                                       |
-| `QDRANT_API_KEY`        | —                  | Wajib bila Qdrant terjangkau dari luar                |
-| `LOG_LEVEL`             | `info`             |                                                       |
-| `LOG_CHAT_REQUEST_BODY` | `false`            | Mencatat pertanyaan member — jangan aktif di produksi |
-| `ASSISTANT_SCOPE`       | —                  | Satu kalimat cakupan asisten, dipakai step triage     |
-| `LLM_TIMEOUT_MS`        | `60000`            |                                                       |
-| `LLM_MAX_RETRIES`       | `2`                |                                                       |
-| `EMBEDDING_TIMEOUT_MS`  | `30000`            |                                                       |
-| `FRAPPE_TIMEOUT_MS`     | `30000`            |                                                       |
-| `QDRANT_TIMEOUT_MS`     | `10000`            |                                                       |
-| `MAX_BODY_BYTES`        | `1048576`          |                                                       |
-| `RATE_LIMIT_MAX`        | `60`               | Per proses, bukan per cluster                         |
-| `RATE_LIMIT_WINDOW_MS`  | `60000`            |                                                       |
+| Variable                    | Default            | Keterangan                                                |
+| --------------------------- | ------------------ | --------------------------------------------------------- |
+| `PORT` / `HOST`             | `3000` / `0.0.0.0` |                                                           |
+| `QDRANT_COLLECTION`         | `knowledge_base`   |                                                           |
+| `QDRANT_API_KEY`            | —                  | Wajib bila Qdrant terjangkau dari luar                    |
+| `LOG_LEVEL`                 | `info`             |                                                           |
+| `LOG_CHAT_REQUEST_BODY`     | `false`            | Mencatat pertanyaan member — jangan aktif di produksi     |
+| `ASSISTANT_SCOPE`           | —                  | Satu kalimat cakupan asisten, dipakai step triage         |
+| `LLM_TIMEOUT_MS`            | `60000`            | Per panggilan                                             |
+| `LLM_MAX_RETRIES`           | `2`                |                                                           |
+| `CHAT_DEADLINE_MS`          | `75000`            | Batas satu `/chat` utuh; harus di bawah timeout caller    |
+| `EMBEDDING_TIMEOUT_MS`      | `30000`            |                                                           |
+| `EMBEDDING_MAX_RETRIES`     | `2`                |                                                           |
+| `EMBEDDING_BATCH_SIZE`      | `64`               | Teks per request embeddings; juga langkah progres reindex |
+| `FRAPPE_TIMEOUT_MS`         | `30000`            |                                                           |
+| `QDRANT_TIMEOUT_MS`         | `10000`            |                                                           |
+| `MCP_MAX_TOOL_PAGES`        | `20`               | Batas aman paginasi `tools/list`                          |
+| `LLM_NATIVE_TOOLS`          | `auto`             | `auto` \| `on` \| `off` — tool calling milik provider     |
+| `LLM_JSON_SCHEMA`           | `auto`             | `auto` \| `on` \| `off` — Structured Outputs              |
+| `CHAT_ASYNC_MAX_CONCURRENT` | `8`                | Job `/chat/async` yang berjalan bersamaan                 |
+| `CHAT_ASYNC_MAX_QUEUED`     | `64`               | Backlog sebelum route menjawab 503                        |
+| `MAX_BODY_BYTES`            | `1048576`          |                                                           |
+| `RATE_LIMIT_MAX`            | `60`               | Per `actor`, per proses — bukan per cluster               |
+| `RATE_LIMIT_WINDOW_MS`      | `60000`            |                                                           |
+| `FAQ_RATE_LIMIT_MAX`        | `600`              | Bucket terpisah untuk sinkronisasi FAQ dari doc_events    |
+| `TRUST_PROXY`               | `false`            | Baca `X-Forwarded-For`; hanya di belakang proxy tepercaya |
 
 Setiap panggilan keluar punya timeout. Ini bukan kosmetik: upstream yang
 menggantung akan menahan background worker Frappe selama umur request tersebut.
+
+Timeout per-panggilan saja tidak membatasi satu `/chat`: enam panggilan LLM
+berurutan, masing-masing diretry `LLM_MAX_RETRIES` kali, berlipat menjadi
+menit-menit — jauh melewati timeout caller mana pun. `CHAT_DEADLINE_MS` adalah
+batas menyeluruhnya; begitu habis, panggilan yang sedang berjalan di-abort dan
+pertanyaan dieskalasi dengan tally biaya yang sudah terpakai.
+
+Nilainya harus **di bawah** timeout caller. Frappe memberi `/chat` sinkron 90
+detik (`CHAT_TIMEOUT` di `alpha_fitness/integrations/retrieval_faq.py`), jadi
+deadline 120 detik — nilai sebelumnya — berarti Frappe sudah menyerah di detik
+90 sementara service masih membakar token LLM 30 detik lagi untuk jawaban yang
+tidak ada penerimanya. Menaikkannya harus bersamaan dengan caller-nya.
 
 `OPENAI_API_URL` dinormalisasi — base URL tanpa path akan diberi `/v1`.
 
@@ -675,6 +752,12 @@ Penjagaan tambahan:
 - **Rate limit bersifat per-proses.** Dengan N replica, batas efektifnya
   `RATE_LIMIT_MAX * N`. Untuk kuota lintas-replica yang benar, pindahkan ke
   reverse proxy atau backing store bersama.
+- **Sinkronisasi FAQ punya bucket sendiri** (`FAQ_RATE_LIMIT_MAX`). Jalur
+  `/faq/*` selain `/faq/generate` tidak membawa `actor`, jadi semuanya berbagi
+  satu bucket alamat — dan karena doc_events Frappe memanggilnya sekali per baris
+  FAQ, impor massal menabrak `RATE_LIMIT_MAX` di tengah jalan dan muncul sebagai
+  doc_event yang gagal, bukan yang tertunda. `/faq/generate` sengaja tidak
+  termasuk: ia menghabiskan satu panggilan LLM per request dan dipicu manusia.
 - **Status reindex disimpan in-memory**, jadi hilang saat restart dan tidak
   dibagi antar replica. Ini dapat diterima karena reindex bersifat
   non-destruktif dan idempoten (lihat 17.6): menjalankannya ulang aman.
@@ -782,3 +865,128 @@ Tag image: push `master` → `:edge` + `:sha-<commit>`; tag `v1.2.3` → `:1.2.3
 Branch protection tidak bisa dipasang oleh workflow atas dirinya sendiri; itu
 setting repositori. Perintah `gh` untuk memasangnya ada di
 [README](README.md#guard-branch-master).
+
+## 20. Keputusan terhadap dokumentasi upstream
+
+Catatan sadar atas hal-hal yang dokumentasi terbaru menyarankan berbeda dari
+yang dilakukan di sini, plus yang sudah diadopsi. Ditulis supaya tidak jadi
+pertanyaan berulang setiap kali ada yang membaca ulang docs provider.
+
+### 20.1 Chat Completions, bukan Responses API
+
+Dokumentasi OpenAI kini memposisikan **Responses API** sebagai permukaan yang
+direkomendasikan (`text.format` menggantikan `response_format`, tool
+internally-tagged, helper `output_text`, `responses.parse`). Service ini tetap di
+`chat.completions`, **disengaja**: seluruh desainnya menargetkan gateway
+OpenAI-compatible (OpenRouter, Nvidia, DeepSeek — lihat komentar di
+`services/embeddings.ts`), dan yang mereka implementasikan adalah
+`/chat/completions`, bukan `/responses`. Pindah ke Responses API berarti menukar
+kompatibilitas provider dengan fitur yang tidak dibutuhkan alur ini.
+
+Yang tetap diadopsi dari docs tanpa pindah API:
+
+- **Structured Outputs** (`response_format: json_schema`, `strict: true`) untuk
+  planner, triage, dan draft FAQ. Sebelumnya JSON diminta lewat prompt lalu
+  diparse manual, dan setiap kegagalan parse berarti eskalasi ke admin — biaya
+  salah parse ditanggung member. Karena tidak semua gateway mendukungnya,
+  `LLM_JSON_SCHEMA=auto` mencoba sekali, lalu mengingat penolakan untuk seumur
+  proses dan turun ke jalur prompt-only. Parser defensif di `chat/parse.ts` tetap
+  ada: backend boleh mengabaikan `strict` tanpa memberi tahu.
+- **Sub-tally `usage`**: `prompt_tokens_details.cached_tokens` dan
+  `completion_tokens_details.reasoning_tokens`. Tanpa keduanya akuntansi biaya
+  salah dua arah — reasoning token dibilling sebagai output tapi tak pernah
+  muncul di jawaban, sementara cached prompt token dibilling lebih murah.
+
+### 20.2 Validasi lewat pipeline Fastify
+
+Dokumentasi Fastify 5 mengarahkan validasi ke schema route, dan menyediakan
+`@fastify/type-provider-zod` untuk Zod. Yang dipakai di sini adalah
+`setValidatorCompiler` dengan compiler Zod lokal (`plugins/zod.ts`) — pola yang
+juga didokumentasikan Fastify, termasuk pembungkus try/catch-nya. Alasannya
+peer dependency: paket type-provider resmi menarik `@fastify/swagger` dan
+`openapi-types`, dan service ini tidak menerbitkan OpenAPI. Hasil yang
+diincar sama: 400 sebelum handler, `request.body` bertipe, satu tempat untuk
+error handling.
+
+Yang **belum** dilakukan: schema untuk response. Menambahkannya akan
+menyerialkan ulang bentuk `sources[].payload` yang bebas, dan Frappe sudah
+mengonsumsi bentuk sekarang — perubahan wire format harus jadi perubahan
+tersendiri, bukan efek samping refactor validasi.
+
+`POST /query` tetap alias `POST /answer` semata-mata untuk kompatibilitas
+pemanggil lama; jangan pakai di integrasi baru.
+
+### 20.3 Tingkat kepatuhan MCP
+
+Transport-nya bukan transport MCP resmi: JSON-RPC dibungkus di atas whitelisted
+method Frappe. Sisi server memakai `frappe_mcp` 0.1 apa adanya, dan paket itu
+mengimplementasikan revisi **2025-03-26** — `handle_initialize` menjawab dengan
+angka itu. `MCP_PROTOCOL_VERSION` di `src/services/mcp.ts` menyebut angka yang
+sama, bukan yang terbaru, supaya konstanta itu menyatakan kontrak yang
+benar-benar berjalan.
+
+Ini penting karena sebelumnya tidak begitu. Client menyatakan 2025-11-25 di
+header setiap hop sementara server menjawab 2025-03-26, dan **tidak ada satu
+sisi pun yang memeriksa** — `frappe_mcp` tidak pernah membaca header itu. Dua
+revisi hidup berdampingan tanpa suara. Menurunkan konstanta di sisi client
+menutup selisih itu dengan cara yang paling murah: satu angka, bukan satu
+lapisan protokol.
+
+Yang dilakukan client di atas kontrak itu:
+
+- **Filter argumen terhadap `properties` yang diiklankan.** Tool yang tidak
+  mendeklarasikan `properties` tidak menerima argumen apa pun. Ini **satu-satunya
+  tempat** argumen diperiksa: `frappe_mcp` memanggil `fn(**arguments)` mentah,
+  jadi apa pun yang lolos filter jadi keyword argument. Tanpa filter ini, key
+  karangan planner sampai ke tool yang schema-nya tidak menyebutnya, dan tool
+  tanpa parameter — `get_environment_context` — gagal dengan `TypeError`.
+- **`nextCursor` diikuti sampai habis.** Server sekarang selalu satu halaman
+  (`nextCursor` dipaksa null), jadi ini defensif: kalau suatu hari ia benar-benar
+  memaginasi, tool yang hilang tidak lenyap diam-diam. Tool yang tidak
+  teriklankan tidak memunculkan error apa pun — modelnya sekadar tidak pernah
+  tahu tool itu ada, yang terlihat seperti asisten yang menolak menjawab.
+- **Validasi `structuredContent` terhadap `outputSchema`** untuk key wajib di
+  level atas, untuk menangkap tool yang berhenti mengirim field yang dipakai
+  prompt di hilir. Library merender `outputSchema` kalau ada di registry.
+- **Header `MCP-Protocol-Version`** tetap dikirim di setiap hop karena transport
+  HTTP di spec mewajibkannya, meski sisi server tidak membacanya.
+
+Yang **tidak** didapat dari library, dan diterima sebagai konsekuensi sadar:
+`title` tidak ikut diiklankan (`get_validated_tool` tidak meneruskannya), jadi
+triage dan planner jatuh ke `description`; tidak ada pengecekan argumen di sisi
+server; dan karena header versi tidak ditegakkan, selisih revisi antara dua repo
+tidak akan terdeteksi sendiri — konstanta di sini harus dijaga manual terhadap
+apa yang `frappe_mcp` implementasikan.
+
+Yang tetap benar di library, dan menjadi alasan lapisan sendiri tidak diperlukan:
+exception dari tool pulang sebagai `isError` di dalam result (bukan 500), dan
+tool yang mengembalikan dict pulang sebagai `structuredContent`. Keduanya yang
+dibaca `chat/tools.ts`.
+
+**Lapisan `StrictMCP` pernah ditulis, lalu dibuang.** Sempat ada
+`alpha_fitness/mcp.py` yang mengambil alih `initialize`, `tools/list`, dan
+`tools/call` untuk menegakkan satu revisi 2025-11-25: header wajib, paginasi
+cursor sungguhan, `title`/`outputSchema`, dan validasi argumen di server. Sekitar
+400 baris kode protokol, plus 20 test. Dibuang karena harganya tidak sepadan:
+yang benar-benar didapat hanya `title` dan pengecekan argumen kedua di server,
+sementara bug yang nyata sudah tertutup oleh filter di client — dan sebagai
+gantinya kita memiliki kode protokol yang harus ikut bergerak setiap kali spec
+bergerak.
+
+**Kenapa tidak ke 2026-07-28.** Revisi itu bukan penambahan field, tapi
+perubahan bentuk protokol: `initialize` dan `notifications/initialized`
+**dihapus**, versi/`clientInfo`/`clientCapabilities` pindah ke `params._meta` di
+setiap request, `server/discover` jadi wajib (MUST), `resultType` wajib di setiap
+result, `ttlMs`/`cacheScope` wajib di hasil list, header `Mcp-Method`/`Mcp-Name`
+wajib dan harus dicocokkan dengan body (`-32020`), `ping` dihapus, dan pola MRTR
+(`resultType: "input_required"`) menggantikan request server→client. Karena
+`frappe_mcp` 0.1 ada tiga revisi di belakangnya, pindah ke sana berarti menulis
+sendiri seluruh lapisan protokol — persis biaya yang baru saja diputuskan tidak
+sepadan. Rujukan: spec 2026-07-28, bagian _Versioning_ dan _Streamable HTTP_.
+
+### 20.4 `.env` dibaca sendiri, bukan `process.loadEnvFile`
+
+Node 22 punya `process.loadEnvFile()` dan `--env-file`. `readDotEnv` di
+`config.ts` tetap dipertahankan karena presedensnya eksplisit dan diuji:
+`process.env` menang atas file, dan nilai berkutip (`KEY="value"`) dibersihkan.
+Keduanya adalah perilaku yang dipilih, bukan kebetulan implementasi.
