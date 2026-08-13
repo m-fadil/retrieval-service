@@ -122,6 +122,240 @@ curl -X POST localhost:3000/chat \
 }
 ```
 
+## Uji manual
+
+`npm test` men-stub setiap dependensi luar, jadi tiga hal hanya bisa dibuktikan
+dari luar proses: kredensial embedding benar, kredensial LLM benar, dan Qdrant
+benar-benar menyimpan apa yang di-embed. Urutan di bawah membuktikannya dengan
+`curl`, seluruhnya **sinkron** — `/chat` mengembalikan jawaban di response body,
+jadi `/chat/async` (yang jawabannya dikirim sebagai callback ke Frappe, tidak
+pernah ke `curl`) tidak dipakai di sini.
+
+<details>
+<summary><b>Tutorial uji manual — 7 step curl (klik untuk buka)</b></summary>
+
+Siapkan sekali:
+
+```bash
+export BASE=http://localhost:3000
+export KEY="$(grep -E '^RETRIEVAL_API_KEY=' .env | cut -d= -f2-)"
+export AUTH="authorization: Bearer $KEY"
+export JSON='content-type: application/json'
+```
+
+`jq` opsional di semua contoh; tambahkan `-i` bila ingin melihat status code.
+Menjalankan seluruh urutan ini berulang kali bisa menyentuh `RATE_LIMIT_MAX`
+(default 60/menit per `actor`) dan dijawab **429** — itu limiter bekerja, bukan
+service rusak.
+
+### 1. Proses hidup, Qdrant terjangkau
+
+```bash
+curl -s $BASE/health                     # {"ok":true,"qdrant":true}
+curl -so /dev/null -w '%{http_code}\n' $BASE/health/ready   # 200 siap, 503 Qdrant mati
+```
+
+`"qdrant":false` membuat step 3 dan 5 pasti kosong. Perbaiki `QDRANT_URL` dulu —
+di dalam compose nilainya `http://qdrant:6333`, bukan `localhost`.
+
+### 2. Guard API key terpasang
+
+```bash
+curl -so /dev/null -w '%{http_code}\n' -X POST $BASE/search \
+  -H "$JSON" -d '{"question":"ping"}'    # 401
+```
+
+**401 adalah hasil yang benar.** 200 di sini berarti guard tidak aktif.
+
+### 3. Embedding berhasil — tulis lalu baca kembali
+
+Menguji jalur embedding tanpa menyentuh LLM: `/index` meng-embed teks dan
+menyimpan vektornya, `/search` meng-embed pertanyaan lalu mencocokkan.
+
+```bash
+curl -s -X POST $BASE/index -H "$AUTH" -H "$JSON" -d '{
+  "documents": [{
+    "id": "smoke-1",
+    "text": "Kucing kantor bernama Mochi, diberi makan tiga kali sehari oleh tim office.",
+    "source": "smoke_test"
+  }]
+}'
+# {"indexed":1}
+```
+
+```bash
+curl -s -X POST $BASE/search -H "$AUTH" -H "$JSON" -d '{
+  "question": "siapa yang memberi makan kucing di kantor?",
+  "source": "smoke_test",
+  "min_score": 0
+}'
+```
+
+Yang dibaca adalah `matches[0].score` (`min_score: 0` dipasang supaya skor
+mentahnya kelihatan, bukan tersaring lebih dulu):
+
+| Hasil                              | Artinya                                                                     |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| `score` di kisaran 0.3–0.9         | embedding dan Qdrant sehat: parafrase mendarat di dokumen yang benar        |
+| `matches: []` padahal `indexed: 1` | vektor tersimpan tapi tidak match — cek `min_score`, lalu `EMBEDDING_MODEL` |
+| 500 berisi pesan provider          | `EMBEDDING_API_URL` / `_KEY` / `_MODEL` salah → step 6                      |
+| 500 menyebut dimensi vektor        | `EMBEDDING_MODEL` pindah ke dimensi lain; jalankan `POST /faq/recreate`     |
+
+`source: "smoke_test"` menjaga dokumen uji ini tidak pernah ikut di jalur FAQ,
+yang selalu memfilter `source: "frappe_faq"`. Point-nya tetap tinggal di
+collection (tidak ada endpoint hapus untuk dokumen generik); bersihkan lewat
+Qdrant langsung bila perlu.
+
+### 4. LLM berhasil — `/answer`
+
+`/answer` adalah retrieval + satu panggilan LLM, tanpa MCP dan tanpa triage: cara
+termurah memastikan kredensial chat model benar.
+
+```bash
+curl -s -X POST $BASE/answer -H "$AUTH" -H "$JSON" \
+  -d '{"question":"siapa yang memberi makan kucing di kantor?","limit":3}'
+```
+
+`answer` berisi kalimat yang menyebut tim office (dari dokumen step 3) → blok
+`OPENAI_*` benar. Gagal di sini sementara step 3 hijau mengisolasi masalah ke
+chat model, bukan ke embedding. `route`/`reason` di response `/answer` konstan
+(`"hybrid"`/`"tool_match"`) — jangan dibaca sebagai keputusan routing.
+
+### 5. `/chat` penuh
+
+```bash
+curl -s -X POST $BASE/chat -H "$AUTH" -H "$JSON" -d '{
+  "question": "Bagaimana cara apply job?",
+  "type": "staff",
+  "actor": "staff@example.com"
+}'
+```
+
+Berhasil atau tidak bukan ditentukan HTTP 200 saja:
+
+- `usage.llm_calls` > 0 — panggilan LLM benar-benar terjadi **dan selesai**.
+  `llm_calls: 0` pada request yang seharusnya memanggil LLM (ada `history`, atau
+  retrieval kosong sehingga triage jalan) berarti setiap panggilan gagal lalu
+  didegradasi diam-diam: `/chat` tetap **200** dengan `needs_admin: true` dan
+  jawaban "diteruskan ke admin". Itu bukan keputusan routing — lanjut ke step 6.
+  `usage.total_tokens` sendiri boleh 0 walau `llm_calls` > 0, pada backend yang
+  tidak melaporkan `usage`.
+- `duration_ms` — bandingkan dengan `CHAT_DEADLINE_MS` (default 75000). Yang
+  mendekati batas akan mati di produksi.
+- `route` dan `reason`:
+
+| `route`        | `reason`                                                 | Artinya                                                         |
+| -------------- | -------------------------------------------------------- | --------------------------------------------------------------- |
+| `faq`          | `faq_match`                                              | dijawab dari FAQ hasil retrieval                                |
+| `mcp`/`hybrid` | `tool_match`                                             | tool MCP Frappe terpanggil — isinya di `tools_used`             |
+| `fallback`     | `conversational`                                         | triage menilai pesan sebagai basa-basi, dijawab tanpa retrieval |
+| `fallback`     | `no_faq_match` / `insufficient_context` / `out_of_scope` | `needs_admin: true`, dieskalasi ke admin                        |
+
+Pertanyaan yang jelas in-scope tapi selalu berakhir `out_of_scope` menandakan
+`ASSISTANT_SCOPE` kosong atau terlalu sempit.
+
+Untuk menguji jalur FAQ end-to-end, tanam satu FAQ lalu tanyakan dengan kata
+lain — `route` harus `faq`:
+
+```bash
+curl -s -X PUT $BASE/faq/SMOKE-1 -H "$AUTH" -H "$JSON" -d '{
+  "question": "Berapa lama proses verifikasi sertifikat?",
+  "answer": "Dua hari kerja setelah dokumen diunggah.",
+  "enabled": true
+}'
+
+curl -s -X POST $BASE/chat -H "$AUTH" -H "$JSON" -d '{
+  "question": "verifikasi sertifikat butuh waktu berapa lama ya?",
+  "type": "staff", "actor": "staff@example.com"
+}'
+```
+
+Hasil yang benar: `route: "faq"`, `reason: "faq_match"`, `answer` berisi isi FAQ
+tadi, dan `sources[0].payload.source_id` = `SMOKE-1`.
+
+Memori percakapan diuji dengan FAQ yang sama, lewat `history` (paling lama di
+depan). Pertanyaannya dipilih supaya **tidak bisa** dijawab tanpa condense —
+"berapa lama tadi?" sendirian tidak mengandung kata kunci apa pun untuk
+retrieval:
+
+```bash
+curl -s -X POST $BASE/chat -H "$AUTH" -H "$JSON" -d '{
+  "question": "berapa lama tadi?",
+  "history": [
+    {"role": "user", "content": "soal verifikasi sertifikat"},
+    {"role": "assistant", "content": "Silakan, mau tanya apa soal verifikasi sertifikat?"}
+  ],
+  "type": "staff", "actor": "staff@example.com"
+}'
+
+curl -s -X DELETE $BASE/faq/SMOKE-1 -H "$AUTH"     # {"deleted":1}
+```
+
+Condense berhasil bila hasilnya sama dengan pertanyaan penuh di atas
+(`route: "faq"`): step itu menulis ulang "berapa lama tadi?" menjadi pertanyaan
+berdiri sendiri sebelum retrieval. `route: "fallback"` dengan `llm_calls: 0`
+bukan berarti `history` tidak didukung — itu panggilan condense yang ditolak
+provider; cek step 6 dulu sebelum menyalahkan flow.
+
+### 6. Menyalahkan yang benar: panggil provider langsung
+
+Bila step 3 atau 4 gagal, lewati service supaya error asli provider terlihat.
+`openAiBaseURL` menambahkan `/v1` hanya pada URL **tanpa** path, jadi base URL
+untuk `curl` disusun dengan aturan yang sama (`https://openrouter.ai/api/v1`
+dipakai apa adanya, `https://api.example.com` menjadi `.../v1`):
+
+```bash
+# .env tidak di-source: FRAPPE_AUTH_TOKEN memuat spasi, dan `. ./.env` gagal di sana.
+val() { grep -E "^$1=" .env | cut -d= -f2-; }
+base() { case "${1%/}" in */v1) echo "${1%/}" ;; *) echo "${1%/}/v1" ;; esac; }
+
+curl -s "$(base "$(val EMBEDDING_API_URL)")/embeddings" \
+  -H "authorization: Bearer $(val EMBEDDING_API_KEY)" -H "$JSON" \
+  -d "{\"model\":\"$(val EMBEDDING_MODEL)\",\"input\":[\"ping\"],\"encoding_format\":\"float\"}" \
+  | head -c 300
+
+curl -s "$(base "$(val OPENAI_API_URL)")/chat/completions" \
+  -H "authorization: Bearer $(val OPENAI_API_KEY)" -H "$JSON" \
+  -d "{\"model\":\"$(val OPENAI_MODEL)\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" \
+  | head -c 300
+```
+
+Balasan yang benar diawali `{"object":"list","data":[{"object":"embedding"…` dan
+`{"id":"…","object":"chat.completion"…`.
+
+401/404 di sini berarti kredensial atau URL, bukan kode service. Kuota habis
+muncul sebagai body 200 berisi error, mis.
+
+```json
+{
+  "type": "error",
+  "error": { "type": "FreeUsageLimitError", "message": "Rate limit exceeded." }
+}
+```
+
+Itu penyebab paling sering dari `/chat` yang 200 tapi `llm_calls: 0`: embedding
+tetap jalan (provider-nya beda), setiap panggilan LLM gagal, dan chat
+didegradasi ke eskalasi admin.
+
+### 7. Melihat langkahnya
+
+Semua baris per-langkah ditulis di level `info`, jadi `LOG_LEVEL` default sudah
+menampilkannya — `debug` tidak menambah apa pun di jalur chat. Yang dicari saat
+menelusuri kegagalan:
+
+| Baris log                                                 | Isinya                                                                          |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `chat.condense` / `chat.triage` / `answer.compose`        | satu baris per langkah, dengan `ms`                                             |
+| `stage: "<langkah>"`, `status: "error"`                   | panggilan LLM langkah itu gagal — inilah sebab `llm_calls` tidak bertambah      |
+| `stage: "<langkah>"`, `status: "json_schema_unsupported"` | provider menolak Structured Outputs; diulang mode prompt-only (wajar di `auto`) |
+| `chat.usage_total`                                        | token seluruh chat + `duration_ms`                                              |
+| `chat.total`                                              | ringkasan per request: `route`, `tools_used`, jumlah `sources`                  |
+
+`LOG_CHAT_REQUEST_BODY=true` menambahkan body request, termasuk pertanyaan asli
+member: hanya untuk lokal, jangan di produksi.
+
+</details>
+
 ## Konfigurasi
 
 Semua variabel divalidasi Zod saat boot (`src/config.ts`); variabel wajib yang
