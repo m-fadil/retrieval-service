@@ -1,9 +1,11 @@
 name: Release
 
 on:
+  # Tag refs only: one GHCR version per released tag.
   push:
-    branches: [master]
     tags: ["v*.*.*"]
+  # Requires a tag ref. On any other ref metadata-action emits no tags and the
+  # push step is a no-op.
   workflow_dispatch:
 
 concurrency:
@@ -14,8 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  # The same checks a PR must pass. `publish` needs this, so an image is never
-  # pushed from a commit that has not been built, typechecked and tested.
+  # Same checks as ci.yml. `publish` needs it, so a tag cannot bypass them.
   verify:
     uses: ./.github/workflows/verify.yml
 
@@ -43,19 +44,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # master -> :edge and :sha-<commit>
-      # v1.2.3 -> :1.2.3, :1.2, :1 and :latest
+      # v1.2.3 -> :1.2.3, :1.2, :1, plus :latest from the default latest=auto
+      # flavor. No edge or sha tags: source commit is recorded in the provenance
+      # attestation and the job summary instead.
       - name: Derive tags
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=edge,branch=master
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=sha,format=long,prefix=sha-
           labels: |
             org.opencontainers.image.title=retrieval-service
             org.opencontainers.image.description=RAG, MCP tool calling and LLM gateway for Frappe
@@ -66,8 +66,8 @@ jobs:
         with:
           context: .
           target: runtime
-          # arm64 is emulated. The app is pure JS with no native build step, so
-          # the cost is npm ci under QEMU rather than a compile.
+          # arm64 runs under QEMU emulation. No native build step in this image,
+          # so the emulated cost is npm ci only.
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

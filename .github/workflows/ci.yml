@@ -3,14 +3,12 @@ name: CI
 on:
   pull_request:
     branches: [master, develop]
-  # PRs into master still run this in full; pushes to master do not, because
-  # release.yml already runs verify.yml there before it publishes. Running both
-  # would mean the same suite twice on every merge.
+  # release.yml triggers on tags only; branch pushes are verified here.
   push:
-    branches: [develop]
+    branches: [master, develop]
 
-# Superseded PR runs are cancelled; pushes to develop are not, so every commit
-# on the integration branch keeps a conclusive status.
+# cancel-in-progress on pull_request events only: branch pushes each keep a
+# terminal status.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -22,8 +20,8 @@ jobs:
   verify:
     uses: ./.github/workflows/verify.yml
 
-  # Single aggregate check to require in branch protection, so adding a job to
-  # verify.yml or a matrix entry does not mean editing the protection rule.
+  # Aggregate status check for branch protection: fixed name, independent of
+  # verify.yml's job list and matrix dimensions.
   ci:
     name: CI
     runs-on: ubuntu-latest
