@@ -290,7 +290,7 @@ test("chat rejects malformed history", async () => {
   assert.ok(response.statusCode >= 400);
 });
 
-test("chat logs sanitized debug metadata when MCP tool discovery degrades with 417", async () => {
+test("chat logs sanitized discovery failure when MCP tool discovery degrades with 417", async () => {
   const secretToken = "token frappe-secret-token";
   const question = "sensitive customer question";
   const jobId = "JOB-sensitive";
@@ -301,7 +301,9 @@ test("chat logs sanitized debug metadata when MCP tool discovery degrades with 4
       events.push({ level: "debug", value });
     },
     info() {},
-    error() {},
+    error(value: unknown) {
+      events.push({ level: "error", value });
+    },
   };
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
@@ -331,9 +333,15 @@ test("chat logs sanitized debug metadata when MCP tool discovery degrades with 4
       log,
     );
 
-    const debugEvents = events.filter((event) => event.level === "debug");
-    assert.equal(debugEvents.length, 1);
-    const output = JSON.stringify(debugEvents[0]?.value);
+    // error level: an empty tool catalogue escalates every data question, so a
+    // degraded discovery must not sit at debug where nobody reads it.
+    const discovery = events.filter(
+      (event) =>
+        event.level === "error" &&
+        JSON.stringify(event.value).includes("tools/list"),
+    );
+    assert.equal(discovery.length, 1);
+    const output = JSON.stringify(discovery[0]?.value);
     assert.match(output, /operation.*tools\/list/);
     assert.match(output, /status.*417/);
     assert.equal(output.includes(secretToken), false);
@@ -418,7 +426,9 @@ test("chat emits sanitized native LLM usage and MCP lifecycle info", async () =>
       .map((event) => event.value as Record<string, unknown>);
     for (const stage of [
       "chat.native_tool_selection",
-      "chat.native_tool_replay",
+      // The turn after the first tool batch: named per turn since the loop can
+      // run several, not just one replay.
+      "chat.native_tool_turn",
     ]) {
       assert.ok(
         info.some(

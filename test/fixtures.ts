@@ -51,6 +51,7 @@ export const config: AppConfig = {
   LLM_JSON_SCHEMA: "auto",
   MCP_MAX_TOOL_PAGES: 20,
   ASSISTANT_SCOPE: "staff and manager questions about jobs and schedules",
+  CHAT_MAX_TOOL_TURNS: 3,
 };
 
 /** Every route except /health requires the shared API key. */

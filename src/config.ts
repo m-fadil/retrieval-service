@@ -59,6 +59,10 @@ const EnvSchema = z.object({
   // already disconnected while this side keeps billing tokens. Raise only in
   // step with the caller.
   CHAT_DEADLINE_MS: z.coerce.number().int().positive().default(75_000),
+  // Tool-calling rounds per chat. One round cannot answer a question whose
+  // second call depends on the first one's result; every extra round is a paid
+  // LLM call, so the ceiling is a cost knob, not a correctness one.
+  CHAT_MAX_TOOL_TURNS: z.coerce.number().int().min(1).max(10).default(3),
   EMBEDDING_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   EMBEDDING_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
   // Texts per embeddings request. The API accepts an array, so indexing and

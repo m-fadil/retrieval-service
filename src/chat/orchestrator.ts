@@ -1,7 +1,7 @@
 import type { AppConfig } from "../config.js";
 import type { ChatRequest, ChatResponse, ChatUsage } from "../schemas/query.js";
 import { FAQ_SOURCE } from "../services/faq.js";
-import type { Llm } from "../services/llm.js";
+import type { Llm, LlmChatParams } from "../services/llm.js";
 import { NATIVE_TOOL_FEATURE, isCapabilityError } from "../services/llm.js";
 import type { FrappeMcpClient, McpChatType, McpTool } from "../services/mcp.js";
 import type { SearchHit } from "../services/qdrant.js";
@@ -13,6 +13,7 @@ import {
 } from "./log.js";
 import {
   parsePlannerOutput,
+  plannedToolKey,
   usableAnswer,
   type PlannedChatTool,
 } from "./parse.js";
@@ -46,7 +47,10 @@ export type Retrieve = (
 ) => Promise<SearchHit[]>;
 
 export type ChatFlowDeps = {
-  config: Pick<AppConfig, "ASSISTANT_SCOPE" | "CHAT_DEADLINE_MS">;
+  config: Pick<
+    AppConfig,
+    "ASSISTANT_SCOPE" | "CHAT_DEADLINE_MS" | "CHAT_MAX_TOOL_TURNS"
+  >;
   llm: Llm;
   mcp: FrappeMcpClient;
   retrieve: Retrieve;
@@ -149,105 +153,154 @@ export function createChatFlow(deps: ChatFlowDeps) {
     sources: SearchHit[];
   } | null> {
     if (!tools.length || !llm.nativeToolsEnabled()) return null;
-    let message;
-    try {
-      message = await llm.chat(
-        {
-          messages: [
-            ...historyMessages(input),
-            { role: "user", content: input.question },
-          ],
-          tools: nativeTools(tools),
-          toolChoice: "auto",
-        },
-        llmOptions("chat.native_tool_selection", budget),
-      );
-    } catch (error) {
-      if (isCapabilityError(error, NATIVE_TOOL_FEATURE)) {
-        // Cached for the life of the process: re-probing a backend without tool
-        // calling costs one paid round trip per request for the same result.
-        llm.disableNativeTools();
-        return null;
-      }
-      throw error;
-    }
-    const calls = message.tool_calls;
-    if (!calls?.length || !calls.every((call) => call.type === "function")) {
-      return null;
-    }
-    const plans = validNativeCalls(calls, input, tools);
-    if (!plans) return null;
-
-    const sources = await runPlans(
-      runTool,
-      type,
-      plans,
-      input,
-      tools,
-      budget.log,
-      "native",
-    );
-
-    const replay = await llm.chat(
+    const log = budget.log;
+    const catalogue = nativeTools(tools);
+    // One conversation carried across turns, so a second round sees the first
+    // round's results. The system prompt is present from the first turn: it
+    // carries the trusted request context the model needs to fill required
+    // arguments it cannot invent (job_id, staff_id).
+    const messages: LlmChatParams["messages"] = [
       {
-        messages: [
-          {
-            role: "system",
-            content: nativeReplaySystemPrompt(
-              mcpArgs(input),
-              faqContext,
-              environmentContext,
-            ),
-          },
-          ...historyMessages(input),
-          { role: "user", content: input.question },
-          {
-            role: "assistant",
-            content: message.content,
-            tool_calls: calls,
-          },
-          ...plans.map((plan, index) => ({
-            role: "tool" as const,
-            tool_call_id: plan.id,
-            content: payloadText(sources[index]!, "text"),
-          })),
-        ],
-        // The catalogue is resent although the results are already in hand:
-        // servers extract tool-call syntax from the output only when the request
-        // carries `tools` with `tool_choice: "auto"`. Other combinations return
-        // the raw text as content, model-specific tokens included. "none" is not
-        // safer — the tool definitions still reach the prompt, while the parser's
-        // output is discarded.
-        tools: nativeTools(tools),
-        toolChoice: "auto",
-      },
-      llmOptions("chat.native_tool_replay", budget),
-    );
-    // A reply carrying tool_calls is not an answer even alongside prose; the
-    // prose is the model narrating its next call.
-    const content = replay.tool_calls?.length ? null : replay.content;
-    if (usableAnswer(content)) return { answer: content, plans, sources };
-
-    // The model called again instead of answering. Re-asking in the same shape
-    // reproduces it, so compose from the results with no `tools` in the request
-    // — leaving no syntax in which to express a call.
-    budget.log?.info({ stage: "chat.native_tool_replay", status: "unusable" });
-    const answer = await timed(
-      budget.log,
-      "chat.native_tool_recompose",
-      {},
-      () =>
-        llm.complete(
-          retrievedAnswerPrompt(
-            input,
-            faqContext,
-            environmentContext,
-            sources.map((source) => payloadText(source, "text")),
-          ),
-          llmOptions("chat.native_tool_recompose", budget),
+        role: "system",
+        content: nativeReplaySystemPrompt(
+          mcpArgs(input),
+          faqContext,
+          environmentContext,
         ),
+      },
+      ...historyMessages(input),
+      { role: "user", content: input.question },
+    ];
+    const allPlans: PlannedChatTool[] = [];
+    const allSources: SearchHit[] = [];
+    const ranBatches = new Set<string>();
+
+    for (let turn = 0; turn < config.CHAT_MAX_TOOL_TURNS; turn++) {
+      const stage = turn
+        ? "chat.native_tool_turn"
+        : "chat.native_tool_selection";
+      let message;
+      try {
+        message = await llm.chat(
+          {
+            messages,
+            // The catalogue is resent although results are already in hand:
+            // servers extract tool-call syntax from the output only when the
+            // request carries `tools` with `tool_choice: "auto"`. Other
+            // combinations return the raw text as content, model-specific
+            // tokens included. "none" is not safer — the tool definitions still
+            // reach the prompt, while the parser's output is discarded.
+            tools: catalogue,
+            toolChoice: "auto",
+          },
+          llmOptions(stage, budget),
+        );
+      } catch (error) {
+        // Only the first turn may degrade to the planner path: once results are
+        // in hand, degrading would re-run tools already billed. A later turn's
+        // failure fails the chat, as it did before the loop existed.
+        if (!turn && isCapabilityError(error, NATIVE_TOOL_FEATURE)) {
+          // Cached for the life of the process: re-probing a backend without
+          // tool calling costs one paid round trip per request for the same
+          // result.
+          llm.disableNativeTools();
+          return null;
+        }
+        throw error;
+      }
+
+      const calls = message.tool_calls;
+      if (!calls?.length || !calls.every((call) => call.type === "function")) {
+        // No further calls: this reply is the answer, if it is usable.
+        if (allSources.length && usableAnswer(message.content)) {
+          return {
+            answer: message.content,
+            plans: allPlans,
+            sources: allSources,
+          };
+        }
+        // Nothing ran and the model answered in prose. Logged with the reply,
+        // because "chose no tool" and "asked the user for an argument it was
+        // never given" are the same silent null here.
+        log?.info({
+          stage,
+          turn,
+          status: "no_tool_calls",
+          reply: message.content?.slice(0, 300),
+        });
+        if (!allSources.length) return null;
+        break;
+      }
+
+      const plans = validNativeCalls(calls, input, tools);
+      if (!plans) {
+        log?.info({
+          stage,
+          turn,
+          status: "rejected",
+          calls: calls.map((call) => ({
+            name: call.function.name,
+            arguments: call.function.arguments.slice(0, 200),
+          })),
+        });
+        if (!allSources.length) return null;
+        break;
+      }
+
+      // A turn that re-requests a batch already run cannot learn anything new,
+      // so it ends the loop instead of burning the remaining turns on it.
+      const batch = plans.map(plannedToolKey).sort().join("|");
+      if (ranBatches.has(batch)) {
+        log?.info({ stage, turn, status: "repeated" });
+        break;
+      }
+      ranBatches.add(batch);
+
+      const sources = await runPlans(
+        runTool,
+        type,
+        plans,
+        input,
+        tools,
+        log,
+        "native",
+      );
+      allPlans.push(...plans);
+      allSources.push(...sources);
+      // Every tool_call id must be answered, or the next turn is a protocol
+      // error rather than a continuation.
+      messages.push(
+        { role: "assistant", content: message.content, tool_calls: calls },
+        ...plans.map((plan, index) => ({
+          role: "tool" as const,
+          tool_call_id: plan.id,
+          content: payloadText(sources[index]!, "text"),
+        })),
+      );
+    }
+
+    if (!allSources.length) return null;
+
+    // Out of turns, or the model kept calling instead of answering. Re-asking in
+    // the same shape reproduces it, so compose from the results with no `tools`
+    // in the request — leaving no syntax in which to express a call.
+    log?.info({
+      stage: "chat.native_tool_recompose",
+      turns: ranBatches.size,
+      tools_run: allPlans.length,
+    });
+    const answer = await timed(log, "chat.native_tool_recompose", {}, () =>
+      llm.complete(
+        retrievedAnswerPrompt(
+          input,
+          faqContext,
+          environmentContext,
+          allSources.map((source) => payloadText(source, "text")),
+        ),
+        llmOptions("chat.native_tool_recompose", budget),
+      ),
     );
-    return { answer, plans, sources };
+    return { answer, plans: allPlans, sources: allSources };
   }
 
   function mandatoryEnvironmentPlan(input: ChatRequest, tools: McpTool[]) {
@@ -279,6 +332,7 @@ export function createChatFlow(deps: ChatFlowDeps) {
       ),
     );
     let tools: McpTool[];
+    let toolsUnavailable = false;
     try {
       tools = await timed(log, "chat.mcp_list_tools", {}, () =>
         mcp.listTools(mcpType, input.actor),
@@ -288,7 +342,12 @@ export function createChatFlow(deps: ChatFlowDeps) {
         error instanceof Error
           ? Number(error.message.match(/\b[1-5]\d{2}\b/)?.[0])
           : undefined;
-      log?.debug({ operation: "tools/list", status });
+      // error, not debug: an empty catalogue escalates every question that
+      // needed data, and the audit row alone cannot tell that apart from a
+      // model that simply chose no tool. Status only — the thrown message
+      // embeds the auth token, the question and the job id.
+      log?.error({ operation: "tools/list", status });
+      toolsUnavailable = true;
       tools = [];
     }
     const environmentPlan = mandatoryEnvironmentPlan(input, tools);
@@ -348,7 +407,11 @@ export function createChatFlow(deps: ChatFlowDeps) {
         needs_admin: true,
         reason:
           verdict.reason ??
-          (environmentSources.length ? "insufficient_context" : "no_faq_match"),
+          (toolsUnavailable
+            ? "tools_unavailable"
+            : environmentSources.length
+              ? "insufficient_context"
+              : "no_faq_match"),
         tools_used: toolsUsed,
         sources,
       };
@@ -408,6 +471,20 @@ export function createChatFlow(deps: ChatFlowDeps) {
         validPlannedTool(plan, input, optionalTools),
       );
       if (
+        !plans.length ||
+        !plans.every((plan): plan is PlannedChatTool => plan !== null) ||
+        !distinctPlans(plans)
+      ) {
+        // Same blind spot as the native path: without this an escalation cannot
+        // be traced to an empty plan versus one whose required args were absent.
+        log?.info({
+          stage: "chat.plan",
+          status: plans.length ? "rejected" : "no_calls",
+          calls: plannerOutput.calls.map((plan) => plan.name),
+        });
+      }
+      if (
+        plans.length &&
         plans.every((plan): plan is PlannedChatTool => plan !== null) &&
         distinctPlans(plans)
       ) {
