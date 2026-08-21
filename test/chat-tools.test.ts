@@ -542,3 +542,88 @@ test("a chat that outlives its deadline fails with the partial tally", async () 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("a second tool turn runs on the first turn's results, then answers", async () => {
+  const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  await withPlanner(
+    [
+      nativeToolCall("today_schedule", {}),
+      nativeToolCall("job_context", {}),
+      finalAnswer("You open the Zumba class at 09:00."),
+    ],
+    async (requests) => {
+      const service = createRagService(
+        config,
+        embedder,
+        store,
+        plannerMcp(
+          [
+            staffTool("today_schedule", "Today's schedules for a staff member"),
+            staffTool("job_context", "Context for one job"),
+          ],
+          calls,
+        ),
+      );
+      const response = await service.chat({
+        type: "staff",
+        question: "what do I open today?",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      });
+      assert.equal(response.answer, "You open the Zumba class at 09:00.");
+      assert.deepEqual(
+        calls.map((call) => call.name),
+        ["today_schedule", "job_context"],
+      );
+      // Three LLM calls, not a recompose: the third turn answered by itself.
+      assert.equal(requests.length, 3);
+      assert.equal(response.needs_admin, false);
+      assert.deepEqual(response.tools_used, [
+        "faq_search",
+        "today_schedule",
+        "job_context",
+      ]);
+      // The second turn must carry the first turn's result back, or the loop is
+      // a re-ask rather than a continuation.
+      assert.match(
+        JSON.stringify(requests[1]?.messages),
+        /today_schedule result/,
+      );
+    },
+  );
+});
+
+test("a turn repeating a batch already run stops the loop", async () => {
+  const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  await withPlanner(
+    [
+      nativeToolCall("today_schedule", {}),
+      nativeToolCall("today_schedule", {}),
+      finalAnswer("Composed from what was already fetched."),
+    ],
+    async () => {
+      const service = createRagService(
+        config,
+        embedder,
+        store,
+        plannerMcp(
+          [staffTool("today_schedule", "Today's schedules for a staff member")],
+          calls,
+        ),
+      );
+      const response = await service.chat({
+        type: "staff",
+        question: "what do I open today?",
+        limit: 5,
+        min_score: 0.7,
+        staff_id: "STAFF-1",
+      });
+      // Called once, not twice: the repeated batch ends the loop and the answer
+      // is recomposed from the result in hand.
+      assert.equal(calls.length, 1);
+      assert.equal(response.answer, "Composed from what was already fetched.");
+      assert.equal(response.needs_admin, false);
+    },
+  );
+});

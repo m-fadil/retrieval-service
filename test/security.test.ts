@@ -46,6 +46,7 @@ const config: AppConfig = {
   LLM_JSON_SCHEMA: "auto",
   MCP_MAX_TOOL_PAGES: 20,
   ASSISTANT_SCOPE: "",
+  CHAT_MAX_TOOL_TURNS: 3,
 };
 
 const authHeaders = { authorization: `Bearer ${config.RETRIEVAL_API_KEY}` };
